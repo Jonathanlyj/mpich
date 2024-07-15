@@ -6,6 +6,9 @@
 
 #include "adio.h"
 #include <unistd.h>
+#include <cuda_runtime.h>
+#include "cufile.h"
+
 
 #ifdef AGGREGATION_PROFILE
 #include "mpe.h"
@@ -20,10 +23,11 @@
 #endif
 
 
+
 void ADIOI_GEN_WriteContig(ADIO_File fd, const void *buf, MPI_Aint count,
                            MPI_Datatype datatype, int file_ptr_type,
                            ADIO_Offset offset, ADIO_Status * status, int *error_code)
-{
+{   
     ssize_t err = -1;
     MPI_Count datatype_size;
     ADIO_Offset len, bytes_xfered = 0;
@@ -72,7 +76,34 @@ void ADIOI_GEN_WriteContig(ADIO_File fd, const void *buf, MPI_Aint count,
             err = pwrite(fd->null_fd, p, wr_count, offset + bytes_xfered);
         else
 #endif
-            err = pwrite(fd->fd_sys, p, wr_count, offset + bytes_xfered);
+            // err = pwrite(fd->fd_sys, p, wr_count, offset + bytes_xfered);
+            CUfileError_t status;
+            CUfileDescr_t cf_descr;
+            CUfileHandle_t cf_handle;
+
+            memset((void *)&cf_descr, 0, sizeof(CUfileDescr_t));
+            cf_descr.handle.fd = fd->fd_sys;
+            cf_descr.type = CU_FILE_HANDLE_TYPE_OPAQUE_FD;
+            status = cuFileHandleRegister(&cf_handle, &cf_descr);
+            if (status.err != CU_FILE_SUCCESS) {
+                *error_code = MPIO_Err_create_code(MPI_SUCCESS,
+                                                MPIR_ERR_RECOVERABLE,
+                                                myname, __LINE__,
+                                                MPI_ERR_IO, "**io", "**io %s", CUFILE_ERRSTR(status.err));
+                fd->fp_sys_posn = -1;
+                return;
+            }
+
+            err = cuFileWrite(cf_handle, p, wr_count, offset + bytes_xfered, CU_STREAM_DEFAULT);
+            if (err < 0) {
+                *error_code = MPIO_Err_create_code(MPI_SUCCESS,
+                                                MPIR_ERR_RECOVERABLE,
+                                                myname, __LINE__,
+                                                MPI_ERR_IO, "**io", "**io cuFileWrite error : %s", CUFILE_ERRSTR(err));
+                fd->fp_sys_posn = -1;
+                cuFileHandleDeregister(cf_handle);
+                return;
+            }
         /* --BEGIN ERROR HANDLING-- */
         if (err == -1) {
             *error_code = MPIO_Err_create_code(MPI_SUCCESS,
