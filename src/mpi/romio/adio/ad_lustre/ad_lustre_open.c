@@ -213,9 +213,9 @@ void ADIOI_LUSTRE_Open(ADIO_File fd, int *error_code)
     }
 #endif
 
-#ifdef WKL_DEBUG
+//#ifdef WKL_DEBUG
 if ((fd->access_mode & ADIO_CREATE) && myrank == 0) printf("%2d: %s line %3d striping ---- unit=%d factor=%d\n",myrank,__func__,__LINE__,fd->hints->striping_unit,fd->hints->striping_factor);
-#endif
+//#endif
 
     if (fd->access_mode & ADIO_APPEND)
         fd->fp_ind = fd->fp_sys_posn = lseek(fd->fd_sys, 0, SEEK_END);

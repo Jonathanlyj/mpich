@@ -5,7 +5,9 @@
 
 #include "ad_lustre.h"
 #include "adio_extern.h"
-
+#include <stdio.h>
+#include <time.h>
+#include <sys/time.h>
 
 #ifdef HAVE_LUSTRE_LOCKAHEAD
 /* in ad_lustre_lock.c */
@@ -43,7 +45,47 @@ typedef struct {
     ADIO_Offset *off; /* list of write offsets by this rank in round m */
 } off_len_list;
 
+void save_inputs(const ADIOI_Access *others_req, const int *count, const int *start_pos, int nprocs, int nprocs_recv, int total_elements, const char *filename) {
+    // Open the file to save the inputs
+    FILE *file = fopen(filename, "a+");
+    if (file == NULL) {
+        printf("Error opening file for writing inputs.\n");
+        return;
+    }
+    fprintf(file, "new round\n");
+    // Write nprocs, nprocs_recv, and total_elements
+    fprintf(file, "%d %d %d\n", nprocs, nprocs_recv, total_elements);
 
+    // Write start_pos array
+    for (int i = 0; i < nprocs; i++) {
+        fprintf(file, "%d ", start_pos[i]);
+    }
+    fprintf(file, "\n");
+
+    // Write count array
+    for (int i = 0; i < nprocs; i++) {
+        fprintf(file, "%d ", count[i]);
+    }
+    fprintf(file, "\n");
+
+    // Write others_req offsets and lens
+    for (int i = 0; i < nprocs; i++) {
+        fprintf(file, "%d %d\n", i, others_req[i].count);
+        if (others_req[i].count == 0) continue;
+        
+        for (int j = 0; j < others_req[i].count; j++) {
+            fprintf(file, "%lld ", others_req[i].offsets[j]);
+        }
+        fprintf(file, "\n");
+        for (int j = 0; j < others_req[i].count; j++) {
+            fprintf(file, "%lld ", others_req[i].lens[j]);
+        }
+        fprintf(file, "\n");
+    }
+
+    // Close the file
+    fclose(file);
+}
 /* prototypes of functions used for collective writes only. */
 static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd,
                                         const void *buf,
@@ -839,6 +881,7 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd,
     /* step_size is the size of aggregate access region covered by each round
      * of two-phase I/O
      */
+    // printf("cb_nodes=%d, striping_unit=%d\n", cb_nodes, striping_unit);
     step_size = (ADIO_Offset)cb_nodes * striping_unit;
 
     /* align min_st_loc downward to the nearest file stripe boundary */
@@ -1564,6 +1607,15 @@ static void ADIOI_LUSTRE_W_Exchange_data(
         srt_off_len->off = (ADIO_Offset *) ADIOI_Malloc(srt_off_len->num * sizeof(ADIO_Offset));
         srt_off_len->len = (int *) ADIOI_Malloc(srt_off_len->num * sizeof(int));
 
+        char inputs_file[100], timestamp[30];
+        // struct timeval tv; 
+        // gettimeofday(&tv, NULL); 
+        // struct tm *t = localtime(&tv.tv_sec);
+        // strftime(timestamp, sizeof(timestamp), "%Y%m%d_%H%M%S", t); 
+        // snprintf(timestamp + strlen(timestamp), sizeof(timestamp) - strlen(timestamp), "_%03ld", tv.tv_usec / 1000);
+        // // Format the filename with the rank and timestamp
+        sprintf(inputs_file, "/scratch/yll6162/romio-test/romio_parts/data/inputs_%d.txt", myrank);
+        save_inputs(others_req, recv_count, start_pos, nprocs, nprocs_recv, srt_off_len->num, inputs_file);
         heap_merge(others_req, recv_count, srt_off_len->off, srt_off_len->len, start_pos,
                    nprocs, nprocs_recv, &srt_off_len->num);
 
