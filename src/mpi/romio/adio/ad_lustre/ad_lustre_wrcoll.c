@@ -47,11 +47,14 @@ typedef struct {
 
 void save_inputs(const ADIOI_Access *others_req, const int *count, const int *start_pos, int nprocs, int nprocs_recv, int total_elements, const char *filename) {
     // Open the file to save the inputs
+    if (total_elements == 0) return;
+
     FILE *file = fopen(filename, "a+");
     if (file == NULL) {
         printf("Error opening file for writing inputs.\n");
         return;
     }
+
     fprintf(file, "new round\n");
     // Write nprocs, nprocs_recv, and total_elements
     fprintf(file, "%d %d %d\n", nprocs, nprocs_recv, total_elements);
@@ -70,9 +73,8 @@ void save_inputs(const ADIOI_Access *others_req, const int *count, const int *st
 
     // Write others_req offsets and lens
     for (int i = 0; i < nprocs; i++) {
+        if (count[i] == 0) continue;
         fprintf(file, "%d %d\n", i, others_req[i].count);
-        if (others_req[i].count == 0) continue;
-        
         for (int j = 0; j < others_req[i].count; j++) {
             fprintf(file, "%lld ", others_req[i].offsets[j]);
         }
@@ -1614,8 +1616,8 @@ static void ADIOI_LUSTRE_W_Exchange_data(
         // strftime(timestamp, sizeof(timestamp), "%Y%m%d_%H%M%S", t); 
         // snprintf(timestamp + strlen(timestamp), sizeof(timestamp) - strlen(timestamp), "_%03ld", tv.tv_usec / 1000);
         // // Format the filename with the rank and timestamp
-        sprintf(inputs_file, "/scratch/yll6162/romio-test/romio_parts/data/inputs_%d.txt", myrank);
-        save_inputs(others_req, recv_count, start_pos, nprocs, nprocs_recv, srt_off_len->num, inputs_file);
+        sprintf(inputs_file, "./inputs_%d.txt", myrank);
+        if (myrank == 0) save_inputs(others_req, recv_count, start_pos, nprocs, nprocs_recv, srt_off_len->num, inputs_file);
         heap_merge(others_req, recv_count, srt_off_len->off, srt_off_len->len, start_pos,
                    nprocs, nprocs_recv, &srt_off_len->num);
 
