@@ -139,7 +139,7 @@ void ADIOI_LUSTRE_Open(ADIO_File fd, int *error_code)
 #ifdef MIMIC_LUSTRE
 #define xstr(s) str(s)
 #define str(s) #s
-#define STRIPE_SIZE 1024
+#define STRIPE_SIZE 1048576
 #define STRIPE_COUNT 4
 
         fd->hints->striping_unit = STRIPE_SIZE;
