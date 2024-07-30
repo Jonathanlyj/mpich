@@ -45,10 +45,9 @@ typedef struct {
     ADIO_Offset *off; /* list of write offsets by this rank in round m */
 } off_len_list;
 
-void save_inputs(const ADIOI_Access *others_req, const int *count, const int *start_pos, int nprocs, int nprocs_recv, int total_elements, const char *filename) {
+void save_inputs(const ADIOI_Access *others_req, const int *count, const int *start_pos, int nprocs, int nprocs_recv, int total_elements, const char *filename){
     // Open the file to save the inputs
     if (total_elements == 0) return;
-
     FILE *file = fopen(filename, "a+");
     if (file == NULL) {
         printf("Error opening file for writing inputs.\n");
@@ -61,7 +60,8 @@ void save_inputs(const ADIOI_Access *others_req, const int *count, const int *st
 
     // Write start_pos array
     for (int i = 0; i < nprocs; i++) {
-        fprintf(file, "%d ", start_pos[i]);
+        // fprintf(file, "%d ", start_pos[i]);
+        fprintf(file, "%d ", 0);
     }
     fprintf(file, "\n");
 
@@ -74,12 +74,12 @@ void save_inputs(const ADIOI_Access *others_req, const int *count, const int *st
     // Write others_req offsets and lens
     for (int i = 0; i < nprocs; i++) {
         if (count[i] == 0) continue;
-        fprintf(file, "%d %d\n", i, others_req[i].count);
-        for (int j = 0; j < others_req[i].count; j++) {
+        fprintf(file, "%d %d\n", i, count[i]);
+        for (int j = start_pos[i]; j < start_pos[i] + count[i]; j++) {
             fprintf(file, "%lld ", others_req[i].offsets[j]);
         }
         fprintf(file, "\n");
-        for (int j = 0; j < others_req[i].count; j++) {
+        for (int j = start_pos[i]; j < start_pos[i] + count[i]; j++) {
             fprintf(file, "%lld ", others_req[i].lens[j]);
         }
         fprintf(file, "\n");
@@ -1042,7 +1042,9 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd,
     int n_buftypes = 0;
     int flat_buf_idx = 0;
     int flat_buf_sz = (buftype_is_contig) ? 0 : flat_buf->blocklens[0];
-
+    if (myrank == 0) {
+        printf("ntimes=%d\n", ntimes);
+    }
     for (m = 0; m < ntimes; m++) {
         int real_size;
         ADIO_Offset real_off;
@@ -1616,7 +1618,8 @@ static void ADIOI_LUSTRE_W_Exchange_data(
         // strftime(timestamp, sizeof(timestamp), "%Y%m%d_%H%M%S", t); 
         // snprintf(timestamp + strlen(timestamp), sizeof(timestamp) - strlen(timestamp), "_%03ld", tv.tv_usec / 1000);
         // // Format the filename with the rank and timestamp
-        sprintf(inputs_file, "./inputs_%d.txt", myrank);
+        sprintf(inputs_file, "./inputs_%d", myrank);
+        if (myrank == 0) printf("m=%d\n", iter);
         if (myrank == 0) save_inputs(others_req, recv_count, start_pos, nprocs, nprocs_recv, srt_off_len->num, inputs_file);
         heap_merge(others_req, recv_count, srt_off_len->off, srt_off_len->len, start_pos,
                    nprocs, nprocs_recv, &srt_off_len->num);
