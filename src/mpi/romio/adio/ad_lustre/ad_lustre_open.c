@@ -73,6 +73,7 @@ void ADIOI_LUSTRE_Open(ADIO_File fd, int *error_code)
     size_t value_sz = (MPI_MAX_INFO_VAL + 1) * sizeof(char);
     static char myname[] = "ADIOI_LUSTRE_OPEN";
 
+
     MPI_Comm_rank(fd->comm, &myrank);
 
     if (fd->perm == ADIO_PERM_NULL) {
@@ -139,7 +140,7 @@ void ADIOI_LUSTRE_Open(ADIO_File fd, int *error_code)
 #ifdef MIMIC_LUSTRE
 #define xstr(s) str(s)
 #define str(s) #s
-#define STRIPE_SIZE 1024
+#define STRIPE_SIZE 1048576
 #define STRIPE_COUNT 4
 
         fd->hints->striping_unit = STRIPE_SIZE;
@@ -213,9 +214,9 @@ void ADIOI_LUSTRE_Open(ADIO_File fd, int *error_code)
     }
 #endif
 
-#ifdef WKL_DEBUG
+// #ifdef WKL_DEBUG
 if ((fd->access_mode & ADIO_CREATE) && myrank == 0) printf("%2d: %s line %3d striping ---- unit=%d factor=%d\n",myrank,__func__,__LINE__,fd->hints->striping_unit,fd->hints->striping_factor);
-#endif
+// #endif
 
     if (fd->access_mode & ADIO_APPEND)
         fd->fp_ind = fd->fp_sys_posn = lseek(fd->fd_sys, 0, SEEK_END);

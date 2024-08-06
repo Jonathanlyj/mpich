@@ -43,7 +43,9 @@ typedef struct {
     ADIO_Offset *off; /* list of write offsets by this rank in round m */
 } off_len_list;
 
-
+double start_time; 
+double exch_time = 0.0, after_exch_time = 0.0, sort_time = 0.0, write_time = 0.0, pre_write_time = 0.0;
+double exch_start_time, after_exch_start_time, sort_start_time, write_start_time, pre_write_start_time;
 /* prototypes of functions used for collective writes only. */
 static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd,
                                         const void *buf,
@@ -492,7 +494,7 @@ void ADIOI_LUSTRE_WriteStridedColl(ADIO_File fd, const void *buf, MPI_Aint count
      * (5)4:301--317, Winter 1996.
      * http://www.mcs.anl.gov/home/thakur/ext2ph.ps
      */
-
+    
     int i, nprocs, nonzero_nprocs, myrank, old_error, tmp_error, my_aggr_idx;
     int do_collect = 0, contig_access_count = 0, buftype_is_contig;
     ADIO_Offset orig_fp, start_offset, end_offset;
@@ -500,8 +502,11 @@ void ADIOI_LUSTRE_WriteStridedColl(ADIO_File fd, const void *buf, MPI_Aint count
     ADIO_Offset *offset_list = NULL, *len_list = NULL;
     ADIOI_Flatlist_node *flat_buf = NULL;
 
+    start_time = MPI_Wtime();
     MPI_Comm_size(fd->comm, &nprocs);
     MPI_Comm_rank(fd->comm, &myrank);
+
+    
 
     orig_fp = fd->fp_ind;
 
@@ -657,10 +662,13 @@ void ADIOI_LUSTRE_WriteStridedColl(ADIO_File fd, const void *buf, MPI_Aint count
          * count_my_req_aggr is the number of aggregators whose file domains
          * have this rank's write requests>
          */
+        if (myrank==1) printf("%s before ADIOI_LUSTRE_Calc_my_req: %lf \n", __func__, MPI_Wtime() - start_time);
+        start_time = MPI_Wtime();
         ADIOI_LUSTRE_Calc_my_req(fd, offset_list, len_list, contig_access_count,
                                  &count_my_req_aggr, &count_my_req_per_aggr,
                                  &my_req, buftype_is_contig, &buf_idx);
-
+        if (myrank==1) printf("%s after ADIOI_LUSTRE_Calc_my_req: %lf \n", __func__, MPI_Wtime() - start_time);
+        start_time = MPI_Wtime();
         /* Find the array index pointing to ranklist[] whose value is this
          * process's MPI rank ID, if this rank is an aggregator. Otherwise -1
          */
@@ -686,11 +694,15 @@ void ADIOI_LUSTRE_WriteStridedColl(ADIO_File fd, const void *buf, MPI_Aint count
          * count_others_req_per_proc[i] indicates how many noncontiguous
          * requests from process i that fall into this process's file domain.
          */
+        if (myrank==1) printf("%s before ADIOI_LUSTRE_Calc_others_req: %lf \n", __func__, MPI_Wtime() - start_time);
+        start_time = MPI_Wtime();
         ADIOI_LUSTRE_Calc_others_req(fd, count_my_req_aggr,
                                      count_my_req_per_aggr, my_req, nprocs,
                                      myrank, my_aggr_idx,
                                      &count_others_req_procs,
                                      &count_others_req_per_proc, &others_req);
+        if (myrank==1) printf("%s after ADIOI_LUSTRE_Calc_others_req: %lf \n", __func__, MPI_Wtime() - start_time);
+        start_time = MPI_Wtime();
 
 #ifdef WKL_DEBUG
 if (!fd->is_agg) {
@@ -707,11 +719,25 @@ else
          * MPI communication in ADIOI_LUSTRE_Exch_and_write(), only MPI_Issend,
          * MPI_Irecv, and MPI_Waitall.
          */
+        if (myrank==1) printf("ADIOI_LUSTRE_Exch_and_write before ADIOI_LUSTRE_Exch_and_write: %lf \n", MPI_Wtime() - start_time);
+        start_time = MPI_Wtime();
         ADIOI_LUSTRE_Exch_and_write(fd, buf, buftype, buftype_is_contig,
                                     flat_buf, others_req, my_req, offset_list,
                                     len_list, min_st_loc, max_end_loc,
                                     contig_access_count, my_aggr_idx, buf_idx,
                                     error_code);
+        if (myrank==1) {
+            printf("%s after ADIOI_LUSTRE_Exch_and_write: %lf \n", __func__, MPI_Wtime() - start_time);
+            printf("ADIOI_LUSTRE_Exch_and_write within loops for two phase: before ADIOI_LUSTRE_W_Exchange_data: %lf \n", MPI_Wtime() - start_time - exch_time - after_exch_time);
+            printf("ADIOI_LUSTRE_Exch_and_write within loops for two phase: ADIOI_LUSTRE_W_Exchange_data: %lf \n", exch_time);
+            printf("ADIOI_LUSTRE_Exch_and_write within loops for two phase: after ADIOI_LUSTRE_W_Exchange_data: %lf \n", after_exch_time);
+            printf("ADIOI_LUSTRE_Exch_and_write within loops for two phase: pre write time: %lf \n", pre_write_time);
+            printf("ADIOI_LUSTRE_Exch_and_write within loops for two phase: write step time: %lf \n", write_time);
+            printf("ADIOI_LUSTRE_W_Exchange_data within loops for two phase: heap_merge: %lf \n", sort_time);
+            printf("ADIOI_LUSTRE_W_Exchange_data within loops for two phase: steps exclude heap_merge: %lf \n", exch_time - sort_time);
+        }
+        start_time = MPI_Wtime();
+
 
         /* free all memory allocated */
         ADIOI_Free_others_req(nprocs, count_others_req_per_proc, others_req);
@@ -772,6 +798,7 @@ else
 #endif
 
     fd->fp_sys_posn = -1;       /* set it to null. */
+    if (myrank==1) printf("%s function end: %lf \n", __func__, MPI_Wtime() - start_time);
 }
 
 /* If successful, error_code is set to MPI_SUCCESS.  Otherwise an error code is
@@ -997,6 +1024,9 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd,
     int n_buftypes = 0;
     int flat_buf_idx = 0;
     int flat_buf_sz = (buftype_is_contig) ? 0 : flat_buf->blocklens[0];
+    if (myrank==1) printf("%s before loops for two phase: %lf \n", __func__, MPI_Wtime() - start_time);
+    start_time = MPI_Wtime();
+
 
     for (m = 0; m < ntimes; m++) {
         int real_size;
@@ -1082,6 +1112,7 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd,
         char *wbuf = (write_buf == NULL) ? NULL : write_buf[ibuf];
         char *rbuf = (recv_buf  == NULL) ? NULL :  recv_buf[ibuf];
         send_buf[ibuf] = NULL;
+        exch_start_time = MPI_Wtime();
         ADIOI_LUSTRE_W_Exchange_data(fd,
                                      buf,
                                      wbuf,               /* OUT: updated in each round */
@@ -1111,7 +1142,8 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd,
                                      reqs + batch_nreqs,   /* OUT: nonblocking recv+send request IDs */
                                      &nreqs[ibuf],         /* OUT: number of recv+send request IDs */
                                      error_code);
-
+        exch_time += MPI_Wtime() - exch_start_time;
+        after_exch_start_time = MPI_Wtime();
         if (*error_code != MPI_SUCCESS)
             goto over;
 
@@ -1221,12 +1253,14 @@ assert(batch_nreqs <= n_send_recv_ub);
 
             req_ptr = reqs;
             batch_nreqs = 0;
+            after_exch_time += MPI_Wtime() - after_exch_start_time;
 
             /* write to numBufs number of stripes */
             for (j=0; j<numBufs; j++) {
+                pre_write_start_time = MPI_Wtime();
                 int real_size;
                 ADIO_Offset real_off;
-
+                
                 if (interleaving_waitall_n_write) {
                     /* wait for isend/irecv for round j to complete */
                     MPI_Waitall(nreqs[j], req_ptr, MPI_STATUSES_IGNORE);
@@ -1242,7 +1276,7 @@ assert(req_ptr - reqs <= n_send_recv_ub);
                         ADIOI_Free(send_buf[j]);
                         send_buf[j] = NULL;
                     }
-
+        
                     if (end_loc >= 0) {
                         /* unpack from recv_buf[] to write_buf[] */
                         char *buf_ptr = recv_buf[j];
@@ -1259,20 +1293,20 @@ assert(req_ptr - reqs <= n_send_recv_ub);
                         }
                     }
                 }
-
+                
                 /* if there is no data to write in round (batch_idx + j) */
                 if (srt_off_len[j].num == 0)
                     continue;
-
+                
                 real_off = off_list[batch_idx + j];
                 real_size = (int) MPL_MIN(striping_unit - real_off % striping_unit,
                                           end_loc - real_off + 1);
-
+                
                 /* lock ahead the file starting from real_off */
                 ADIOI_LUSTRE_WR_LOCK_AHEAD(fd, cb_nodes, real_off, error_code);
                 if (*error_code != MPI_SUCCESS)
                     goto over;
-
+                pre_write_time += MPI_Wtime() - pre_write_start_time;
                 /* When srt_off_len[j].num == 1, either there is no hole in the
                  * write buffer or the file domain has been read into write
                  * buffer and updated with the received write data. When
@@ -1284,7 +1318,8 @@ assert(req_ptr - reqs <= n_send_recv_ub);
                  * srt_off_len[j].num) have been coalesced in
                  * ADIOI_LUSTRE_W_Exchange_data().
                  */
-
+                
+                write_start_time = MPI_Wtime();
                 for (i = 0; i < srt_off_len[j].num; i++) {
                     MPI_Status status;
 
@@ -1294,7 +1329,7 @@ assert(req_ptr - reqs <= n_send_recv_ub);
                      */
                     ADIOI_Assert(srt_off_len[j].off[i] < real_off + real_size &&
                                  srt_off_len[j].off[i] >= real_off);
-
+                    
                     ADIO_WriteContig(fd,
                                      write_buf[j] + (srt_off_len[j].off[i] - real_off),
                                      srt_off_len[j].len[i],
@@ -1305,6 +1340,7 @@ assert(req_ptr - reqs <= n_send_recv_ub);
                     if (*error_code != MPI_SUCCESS)
                         goto over;
                 }
+                write_time += MPI_Wtime() - write_start_time;
                 if (srt_off_len[j].num > 0) {
                     ADIOI_Free(srt_off_len[j].off);
                     ADIOI_Free(srt_off_len[j].len);
@@ -1315,6 +1351,7 @@ assert(req_ptr - reqs <= n_send_recv_ub);
         }
         else
             ibuf++;
+        
     }
 
   over:
@@ -1563,10 +1600,10 @@ static void ADIOI_LUSTRE_W_Exchange_data(
          */
         srt_off_len->off = (ADIO_Offset *) ADIOI_Malloc(srt_off_len->num * sizeof(ADIO_Offset));
         srt_off_len->len = (int *) ADIOI_Malloc(srt_off_len->num * sizeof(int));
-
+        sort_start_time = MPI_Wtime();
         heap_merge(others_req, recv_count, srt_off_len->off, srt_off_len->len, start_pos,
                    nprocs, nprocs_recv, &srt_off_len->num);
-
+        sort_time += MPI_Wtime() - sort_start_time;
         /* srt_off_len->num has been updated in heap_merge() such that srt_off_len->off and
          * srt_off_len->len were coalesced
          */
@@ -1877,6 +1914,8 @@ int num_memcpy = 0;
                 if (q != my_aggr_idx) { /* send only if not self rank */
                     /* get the aggregator's MPI rank ID */
                     int dest = fd->hints->ranklist[q];
+                    //YL:In the case of device(GPU) buffer as user buffer, since MPI is cuda-aware,
+                    // MPI functions implicitly handles the GPU(user buffer)->CPU(send buffer)
                     if (isUserBuf)
                         MPI_Issend(same_buf_ptr, send_size[q], MPI_BYTE, dest,
                                    ADIOI_COLL_TAG(dest, iter), fd->comm, &send_reqs[jj++]);
@@ -1888,6 +1927,8 @@ int num_memcpy = 0;
                     /* send to self and user buf is contiguous, then make a
                      * single memcpy from buf directly to send_buf[q]
                      */
+                    //YL: Note this becomes tricky in the case of device(GPU) buffer as user buffer
+                    //In this case, memcpy cannot handle GPU buffer directly and should error out
                     memcpy(send_buf[q], same_buf_ptr, send_size[q]);
                 }
             }
