@@ -6,7 +6,7 @@
 #include "ad_lustre.h"
 #include "adio_extern.h"
 
-
+#include <cuda_runtime.h>
 #ifdef HAVE_LUSTRE_LOCKAHEAD
 /* in ad_lustre_lock.c */
 void ADIOI_LUSTRE_lock_ahead_ioctl(ADIO_File fd,
@@ -37,11 +37,55 @@ if (fd->hints->fs_hints.lustre.lock_ahead_write) {                          \
     }                                                            \
 }
 
+
+#define MEMCPY_UNPACK_FROM_DEVICE(x, inbuf, start, count, outbuf) {          \
+    int _k;                                                      \
+    char *_ptr = (inbuf);                                        \
+    MPI_Aint    *mem_ptrs = others_req[x].mem_ptrs + (start)[x]; \
+    ADIO_Offset *mem_lens = others_req[x].lens     + (start)[x]; \
+    for (_k=0; _k<(count)[x]; _k++) {                            \
+        cudaMemcpy((outbuf) + mem_ptrs[_k], _ptr, mem_lens[_k],  \
+                   cudaMemcpyDeviceToHost);                      \
+        _ptr += mem_lens[_k];                                    \
+    }                                                            \
+}
+
 typedef struct {
     int          num; /* number of elements in the above off-len list */
     int         *len; /* list of write lengths by this rank in round m */
     ADIO_Offset *off; /* list of write offsets by this rank in round m */
 } off_len_list;
+
+
+void transfer_buf_to_cpu(void **host_buf, const void *buf, size_t trans_size) {
+    // Get the size of the MPI_Datatype in bytes
+    //Transfer data from host to device
+    
+    *host_buf = ADIOI_Malloc(trans_size);
+    
+    if (*host_buf == NULL) {
+        fprintf(stderr, "Failed to allocate host memory\n");
+        return;
+    }
+    printf("Allocated host memory\n");
+    cudaError_t err = cudaMemcpy(*host_buf, buf, trans_size, cudaMemcpyDeviceToHost);
+    
+    if (err != cudaSuccess) {
+        fprintf(stderr, "CUDA memcpy failed: %s\n", cudaGetErrorString(err));
+        free(*host_buf);  // Free allocated memory on failure
+        *host_buf = NULL;
+    }
+}
+
+void transfer_datatype_to_cpu(MPI_Datatype buftype, const void *buf, void **host_buf, int count) {
+    // Get the size of the MPI_Datatype in bytes
+    int size;
+    MPI_Type_size(buftype, &size);
+    transfer_buf_to_cpu(host_buf, buf, size * count);
+}
+
+
+
 
 
 /* prototypes of functions used for collective writes only. */
@@ -504,6 +548,8 @@ void ADIOI_LUSTRE_WriteStridedColl(ADIO_File fd, const void *buf, MPI_Aint count
     MPI_Comm_rank(fd->comm, &myrank);
 
     orig_fp = fd->fp_ind;
+    if (myrank==0) printf("ADIOI_LUSTRE_WriteStridedColl called\n");
+
 
     /* Check if collective write is actually necessary, if cb_write hint isn't
      * disabled by users.
@@ -707,6 +753,11 @@ else
          * MPI communication in ADIOI_LUSTRE_Exch_and_write(), only MPI_Issend,
          * MPI_Irecv, and MPI_Waitall.
          */
+        // Allocate and transfer data to CPU. Note this transfer requires this write to be collecitve Two phase i/o
+        // void *host_buf;
+        // transfer_datatype_to_cpu(buftype, buf, &host_buf, count);
+        // if (myrank == 0) printf("transfer circular buffer to CPU\n");
+        // buf = host_buf;
         ADIOI_LUSTRE_Exch_and_write(fd, buf, buftype, buftype_is_contig,
                                     flat_buf, others_req, my_req, offset_list,
                                     len_list, min_st_loc, max_end_loc,
@@ -832,6 +883,8 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd,
      * non-aggregators must also participate all ntimes rounds to send their
      * requests to I/O aggregators.
      */
+
+
 
     cb_nodes = fd->hints->cb_nodes;
     striping_unit = fd->hints->striping_unit;
@@ -1082,6 +1135,8 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd,
         char *wbuf = (write_buf == NULL) ? NULL : write_buf[ibuf];
         char *rbuf = (recv_buf  == NULL) ? NULL :  recv_buf[ibuf];
         send_buf[ibuf] = NULL;
+
+
         ADIOI_LUSTRE_W_Exchange_data(fd,
                                      buf,
                                      wbuf,               /* OUT: updated in each round */
@@ -1618,6 +1673,7 @@ static void ADIOI_LUSTRE_W_Exchange_data(
     if (!fd->atomicity) {
         /* post receives and receive messages into contig_buf, a temporary
          * buffer */
+
         buf_ptr = contig_buf;
         for (i = 0; i < nprocs; i++) {
             if (recv_size[i] == 0)
@@ -1645,24 +1701,49 @@ static void ADIOI_LUSTRE_W_Exchange_data(
                  * buftype_is_contig == 0 is handled at the send time below.
                  */
                 char *fromBuf = (char *) buf + buf_idx[my_aggr_idx];
-                MEMCPY_UNPACK(i, fromBuf, start_pos, recv_count, write_buf);
+                // MEMCPY_UNPACK(i, fromBuf, start_pos, recv_count, write_buf);
+                MEMCPY_UNPACK_FROM_DEVICE(i, fromBuf, start_pos, recv_count, write_buf);
             }
         }
     }
+
+    /*            
+    // Allocate memory on the host based on the datatype size and count of elements
+    *host_buf = ADIOI_Malloc(size * count);
+    if (*host_buf == NULL) {
+        fprintf(stderr, "Failed to allocate host memory\n");
+        return;
+    }
+
+    // Copy data from device (GPU) to host (CPU)
+    cudaError_t err = cudaMemcpy(*host_buf, buf, size * count, cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "CUDA memcpy failed: %s\n", cudaGetErrorString(err));
+        free(*host_buf);  // Free allocated memory on failure
+        *host_buf = NULL;
+    }
+    */
     *nreqs = nrecv;
     reqs += nrecv;
-
+    
     if (buftype_is_contig) {
         /* If buftype_is_contig, data can be directly sent from user buf
          * at location given by buf_idx.
          */
+        
         for (i = 0; i < cb_nodes; i++) {
             int dest = fd->hints->ranklist[i];
             if (send_size[i] && i != my_aggr_idx) {
 #ifdef WKL_DEBUG
 ADIOI_Assert(buf_idx[i] != -1);
 #endif
-                MPI_Issend((char *) buf + buf_idx[i], send_size[i],
+                //Transfer data from device to host
+                void *host_buf;
+                // printf("\nbefore transfer_buf_to_cpu");
+                transfer_buf_to_cpu(&host_buf, (char *) buf + buf_idx[i], send_size[i]);
+                // printf("\n after transfer_buf_to_cpu");
+                //End of transfer
+                MPI_Issend(host_buf, send_size[i],
                            MPI_BYTE, dest, ADIOI_COLL_TAG(dest, iter),
                            fd->comm, &reqs[nsend++]);
             }
@@ -1679,7 +1760,7 @@ ADIOI_Assert(buf_idx[i] != -1);
         (*send_buf)[0] = (char *) ADIOI_Malloc(send_total_size);
         for (i = 1; i < cb_nodes; i++)
             (*send_buf)[i] = (*send_buf)[i - 1] + send_size[i - 1];
-
+        
         ADIOI_LUSTRE_Fill_send_buffer(fd, buf, n_buftypes, flat_buf_idx,
                                       flat_buf_sz, flat_buf, (*send_buf),
                                       fileview_indx, offset_list, len_list,

@@ -140,7 +140,7 @@ void ADIOI_LUSTRE_Open(ADIO_File fd, int *error_code)
 #define xstr(s) str(s)
 #define str(s) #s
 #define STRIPE_SIZE 1024
-#define STRIPE_COUNT 4
+#define STRIPE_COUNT 1
 
         fd->hints->striping_unit = STRIPE_SIZE;
         ADIOI_Info_set(fd->info, "striping_unit", xstr(STRIPE_SIZE));
