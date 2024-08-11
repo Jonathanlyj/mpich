@@ -1738,12 +1738,17 @@ static void ADIOI_LUSTRE_W_Exchange_data(
 ADIOI_Assert(buf_idx[i] != -1);
 #endif
                 //Transfer data from device to host
-                void *host_buf;
-                // printf("\nbefore transfer_buf_to_cpu");
-                transfer_buf_to_cpu(&host_buf, (char *) buf + buf_idx[i], send_size[i]);
-                // printf("\n after transfer_buf_to_cpu");
-                //End of transfer
-                MPI_Issend(host_buf, send_size[i],
+                //option1: manually copy data from device to host
+                // void *host_buf;
+                // transfer_buf_to_cpu(&host_buf, (char *) buf + buf_idx[i], send_size[i]);
+  
+                // //End of transfer
+                // MPI_Issend(host_buf, send_size[i],
+                //            MPI_BYTE, dest, ADIOI_COLL_TAG(dest, iter),
+                //            fd->comm, &reqs[nsend++]);
+
+                //option2: call as normal, cuda-aware mpich will handle the transfer
+                MPI_Issend((char *) buf + buf_idx[i], send_size[i],
                            MPI_BYTE, dest, ADIOI_COLL_TAG(dest, iter),
                            fd->comm, &reqs[nsend++]);
             }
