@@ -9,6 +9,8 @@
 #include <cuda_runtime.h>
 #ifdef HAVE_LUSTRE_LOCKAHEAD
 /* in ad_lustre_lock.c */
+
+
 void ADIOI_LUSTRE_lock_ahead_ioctl(ADIO_File fd,
                                    int cb_nodes, ADIO_Offset next_offset, int *error_code);
 
@@ -60,21 +62,46 @@ typedef struct {
 void transfer_buf_to_cpu(void **host_buf, const void *buf, size_t trans_size) {
     // Get the size of the MPI_Datatype in bytes
     //Transfer data from host to device
-    
-    *host_buf = ADIOI_Malloc(trans_size);
-    
+    cudaError_t err;
+    // *host_buf = ADIOI_Malloc(trans_size);
+    cudaMallocHost(host_buf,trans_size);
+    size_t buf_size;
+    err = cudaMemGetInfo(&buf_size, NULL);
+    printf("trans_size: %zu\n", trans_size);
     if (*host_buf == NULL) {
         fprintf(stderr, "Failed to allocate host memory\n");
         return;
     }
-    printf("Allocated host memory\n");
-    cudaError_t err = cudaMemcpy(*host_buf, buf, trans_size, cudaMemcpyDeviceToHost);
+    printf("\nbuf_in_romio address: %p\n", buf);
+    printf("\nhost_buf_in_romio address: %p\n", *host_buf);
+    err = cudaMemcpy(*host_buf, buf, trans_size, cudaMemcpyDeviceToHost);
     
     if (err != cudaSuccess) {
         fprintf(stderr, "CUDA memcpy failed: %s\n", cudaGetErrorString(err));
         free(*host_buf);  // Free allocated memory on failure
         *host_buf = NULL;
     }
+}
+
+
+int check_memory_type(const void *ptr, const char *name) {
+    struct cudaPointerAttributes attributes;
+    cudaError_t err = cudaPointerGetAttributes(&attributes, ptr);
+    if (err != cudaSuccess) {
+        printf("Failed to get pointer attributes for %s: %s\n", name, cudaGetErrorString(err));
+        return -1;
+    }
+    
+    // if (attributes.type == cudaMemoryTypeDevice) {
+    //     printf("%s is in device memory\n", name);
+    // } else if (attributes.type == cudaMemoryTypeHost) {
+    //     printf("%s is in host memory\n", name);
+    // } else if (attributes.type == cudaMemoryTypeManaged) {
+    //     printf("%s is in managed memory\n", name);
+    // } else {
+    //     printf("%s is in unregistered memory\n", name);
+    // }
+    return attributes.type == cudaMemoryTypeDevice;
 }
 
 void transfer_datatype_to_cpu(MPI_Datatype buftype, const void *buf, void **host_buf, int count) {
@@ -550,6 +577,7 @@ void ADIOI_LUSTRE_WriteStridedColl(ADIO_File fd, const void *buf, MPI_Aint count
     orig_fp = fd->fp_ind;
     if (myrank==0) printf("ADIOI_LUSTRE_WriteStridedColl called\n");
 
+    
 
     /* Check if collective write is actually necessary, if cb_write hint isn't
      * disabled by users.
@@ -753,11 +781,22 @@ else
          * MPI communication in ADIOI_LUSTRE_Exch_and_write(), only MPI_Issend,
          * MPI_Irecv, and MPI_Waitall.
          */
-        // Allocate and transfer data to CPU. Note this transfer requires this write to be collecitve Two phase i/o
-        // void *host_buf;
-        // transfer_datatype_to_cpu(buftype, buf, &host_buf, count);
-        // if (myrank == 0) printf("transfer circular buffer to CPU\n");
-        // buf = host_buf;
+        //Allocate and transfer data to CPU. Note this transfer requires this write to be collecitve Two phase i/o
+        // Check if pointers are device or host memory
+        // int result = is_device_memory(buf);
+        // if (result == -1) {
+        //     printf("Error determining memory type for device_ptr\n");
+        // } else {
+        //     printf("device_ptr is %s memory\n", result ? "device" : "host");
+        // }
+        void *host_buf;
+        int is_device;
+        is_device = check_memory_type(buf, "buf_in_romio");
+        if (count > 0 && is_device) {
+            transfer_datatype_to_cpu(buftype, buf, &host_buf, count);
+        }
+        if (myrank == 0) printf("transfer device buffer to CPU\n");
+        buf = host_buf;
         ADIOI_LUSTRE_Exch_and_write(fd, buf, buftype, buftype_is_contig,
                                     flat_buf, others_req, my_req, offset_list,
                                     len_list, min_st_loc, max_end_loc,
@@ -926,9 +965,12 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd,
      * are sent to aggregators for nbufs amount before writing to the file.
      */
     nbufs = fd->hints->cb_buffer_size / striping_unit / 2;
+
     if (fd->hints->cb_buffer_size % striping_unit) nbufs++;
     nbufs = (nbufs > ntimes) ? ntimes : nbufs;
     if (nbufs == 0) nbufs = 1; /* must at least 1 */
+
+    
 
     /* end_loc >= 0 indicates this process has something to write. Only I/O
      * aggregators can have end_loc > 0. write_buf is the collective buffer and
@@ -1050,7 +1092,7 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd,
     int n_buftypes = 0;
     int flat_buf_idx = 0;
     int flat_buf_sz = (buftype_is_contig) ? 0 : flat_buf->blocklens[0];
-
+    if (myrank==0) printf("ntimes = %d\n", ntimes);
     for (m = 0; m < ntimes; m++) {
         int real_size;
         ADIO_Offset real_off;
@@ -1190,12 +1232,12 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd,
              * non-aggregators may post too many issend.
              */
             write_now = (batch_nreqs >= cb_nodes * 2);
-
+        if (myrank==0) printf("\nm: %d ibuf: %d", m, ibuf);
         /* commit writes for this batch of numBufs */
         if (m % nbufs == nbufs - 1 || m == ntimes - 1 || write_now) {
             MPI_Request *req_ptr;
             int numBufs = ibuf + 1;
-
+            // printf("m: %d ibuf: %d numBufs: %d\n", m, ibuf, numBufs);
             /* reset ibuf to the first element of nbufs */
             ibuf = 0;
 
@@ -1220,6 +1262,7 @@ assert(batch_nreqs <= n_send_recv_ub);
                     batch_nreqs = 0;
                     /* free send_buf that may be allocated in
                      * ADIOI_LUSTRE_W_Exchange_data() */
+                    
                     for (j=0; j<numBufs; j++) {
                         if (send_buf[j] != NULL) {
                             ADIOI_Free(send_buf[j][0]);
