@@ -67,13 +67,13 @@ void transfer_buf_to_cpu(void **host_buf, const void *buf, size_t trans_size) {
     cudaMallocHost(host_buf,trans_size);
     size_t buf_size;
     err = cudaMemGetInfo(&buf_size, NULL);
-    printf("trans_size: %zu\n", trans_size);
+    // printf("trans_size: %zu\n", trans_size);
     if (*host_buf == NULL) {
         fprintf(stderr, "Failed to allocate host memory\n");
         return;
     }
-    printf("\nbuf_in_romio address: %p\n", buf);
-    printf("\nhost_buf_in_romio address: %p\n", *host_buf);
+    // printf("\nbuf_in_romio address: %p\n", buf);
+    // printf("\nhost_buf_in_romio address: %p\n", *host_buf);
     err = cudaMemcpy(*host_buf, buf, trans_size, cudaMemcpyDeviceToHost);
     
     if (err != cudaSuccess) {
@@ -795,7 +795,7 @@ else
         if (count > 0 && is_device) {
             transfer_datatype_to_cpu(buftype, buf, &host_buf, count);
         }
-        if (myrank == 0) printf("transfer device buffer to CPU\n");
+        // if (myrank == 0) printf("transfer device buffer to CPU\n");
         buf = host_buf;
         ADIOI_LUSTRE_Exch_and_write(fd, buf, buftype, buftype_is_contig,
                                     flat_buf, others_req, my_req, offset_list,
@@ -1232,7 +1232,7 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd,
              * non-aggregators may post too many issend.
              */
             write_now = (batch_nreqs >= cb_nodes * 2);
-        if (myrank==0) printf("\nm: %d ibuf: %d", m, ibuf);
+        // if (myrank==0) printf("\nm: %d ibuf: %d", m, ibuf);
         /* commit writes for this batch of numBufs */
         if (m % nbufs == nbufs - 1 || m == ntimes - 1 || write_now) {
             MPI_Request *req_ptr;
