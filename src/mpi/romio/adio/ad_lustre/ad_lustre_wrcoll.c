@@ -10,7 +10,6 @@
 #ifdef HAVE_LUSTRE_LOCKAHEAD
 /* in ad_lustre_lock.c */
 
-
 void ADIOI_LUSTRE_lock_ahead_ioctl(ADIO_File fd,
                                    int cb_nodes, ADIO_Offset next_offset, int *error_code);
 
@@ -52,6 +51,11 @@ if (fd->hints->fs_hints.lustre.lock_ahead_write) {                          \
     }                                                            \
 }
 
+double offload_time = 0.0;
+double total_time = 0.0; 
+double exchange_time = 0.0;
+double write_time = 0.0;
+
 typedef struct {
     int          num; /* number of elements in the above off-len list */
     int         *len; /* list of write lengths by this rank in round m */
@@ -92,16 +96,16 @@ int check_memory_type(const void *ptr, const char *name) {
         return -1;
     }
     
-    if (attributes.type == cudaMemoryTypeDevice) {
-        return 1;
-    } else if (attributes.type == cudaMemoryTypeHost) {
-        printf("%s is in host memory\n", name);
-    } else if (attributes.type == cudaMemoryTypeManaged) {
-        printf("%s is in managed memory\n", name);
-    } else {
-        printf("%s is in unregistered memory\n", name);
-    }
-    return 0;
+    // if (attributes.type == cudaMemoryTypeDevice) {
+    //     return 1;
+    // } else if (attributes.type == cudaMemoryTypeHost) {
+    //     printf("%s is in host memory\n", name);
+    // } else if (attributes.type == cudaMemoryTypeManaged) {
+    //     printf("%s is in managed memory\n", name);
+    // } else {
+    //     printf("%s is in unregistered memory\n", name);
+    // }
+    return attributes.type == cudaMemoryTypeDevice;
 }
 
 void transfer_datatype_to_cpu(MPI_Datatype buftype, const void *buf, void **host_buf, int count, int buftype_is_contig) {
@@ -623,7 +627,10 @@ void ADIOI_LUSTRE_WriteStridedColl(ADIO_File fd, const void *buf, MPI_Aint count
     orig_fp = fd->fp_ind;
     // if (myrank==0) printf("\nADIOI_LUSTRE_WriteStridedColl called");
 
-    
+    double total_start = MPI_Wtime();
+    exchange_time = 0.0;
+    offload_time = 0.0;
+    write_time = 0.0;
 
     /* Check if collective write is actually necessary, if cb_write hint isn't
      * disabled by users.
@@ -709,6 +716,7 @@ void ADIOI_LUSTRE_WriteStridedColl(ADIO_File fd, const void *buf, MPI_Aint count
             buftype_is_contig = 1;
     }
     //--------------- One-time CPU Offloading ----------------
+    double offload_start = MPI_Wtime();
     void *host_buf;
     int is_device;
     is_device = check_memory_type(buf, "buf_in_romio");
@@ -717,7 +725,7 @@ void ADIOI_LUSTRE_WriteStridedColl(ADIO_File fd, const void *buf, MPI_Aint count
         // printf("\ntransfer datatype to CPU\n");
         transfer_datatype_to_cpu(buftype, buf, &host_buf, count, buftype_is_contig);
     }
-    
+    offload_time += MPI_Wtime() - offload_start;
     // printf("host_buf_in_romio address: %p\n", host_buf);
     // if (myrank == 0) printf("transfer device buffer to CPU\n");
     buf = host_buf;
@@ -915,6 +923,13 @@ else
 #endif
 
     fd->fp_sys_posn = -1;       /* set it to null. */
+    total_time = MPI_Wtime() - total_start;
+    if (myrank == 0) {
+        printf("ROMIO: ADIOI_LUSTRE_WriteStridedColl total time: %lf seconds\n", total_time);
+        printf("ROMIO: ADIOI_LUSTRE_WriteStridedColl offload time: %lf seconds\n", offload_time); 
+        printf("ROMIO: ADIOI_LUSTRE_WriteStridedColl exchange time: %lf seconds\n", exchange_time);
+        printf("ROMIO: ADIOI_LUSTRE_WriteStridedColl write time: %lf seconds\n", write_time);   
+    }
 }
 
 /* If successful, error_code is set to MPI_SUCCESS.  Otherwise an error code is
@@ -1231,6 +1246,7 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd,
         char *rbuf = (recv_buf  == NULL) ? NULL :  recv_buf[ibuf];
         send_buf[ibuf] = NULL;
         // printf("\nADIOI_LUSTRE_W_Exchange_data");
+        double exchange_start = MPI_Wtime();
         ADIOI_LUSTRE_W_Exchange_data(fd,
                                      buf,
                                      wbuf,               /* OUT: updated in each round */
@@ -1260,7 +1276,7 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd,
                                      reqs + batch_nreqs,   /* OUT: nonblocking recv+send request IDs */
                                      &nreqs[ibuf],         /* OUT: number of recv+send request IDs */
                                      error_code);
-
+        exchange_time += MPI_Wtime() - exchange_start;
         if (*error_code != MPI_SUCCESS)
             goto over;
 
@@ -1444,7 +1460,7 @@ assert(req_ptr - reqs <= n_send_recv_ub);
                      */
                     ADIOI_Assert(srt_off_len[j].off[i] < real_off + real_size &&
                                  srt_off_len[j].off[i] >= real_off);
-
+                    double write_start = MPI_Wtime();
                     ADIO_WriteContig(fd,
                                      write_buf[j] + (srt_off_len[j].off[i] - real_off),
                                      srt_off_len[j].len[i],
@@ -1452,6 +1468,7 @@ assert(req_ptr - reqs <= n_send_recv_ub);
                                      ADIO_EXPLICIT_OFFSET,
                                      srt_off_len[j].off[i],
                                      &status, error_code);
+                    write_time += MPI_Wtime() - write_start;
 
                     if (*error_code != MPI_SUCCESS)
                         goto over;
@@ -2465,6 +2482,7 @@ static void ADIOI_LUSTRE_IterateOneSided(ADIO_File fd, const void *buf, int *str
     ADIOI_Free(segment_stripe_end);
 
     fd->hints->cb_nodes = orig_cb_nodes;
+
 
 }
 
