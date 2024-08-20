@@ -44,8 +44,8 @@ typedef struct {
 } off_len_list;
 
 double start_time; 
-double exch_time = 0.0, after_exch_time = 0.0, sort_time = 0.0, write_time = 0.0, pre_write_time = 0.0;
-double exch_start_time, after_exch_start_time, sort_start_time, write_start_time, pre_write_start_time;
+double exch_time = 0.0, after_exch_time = 0.0, sort_time = 0.0, write_time = 0.0, pre_write_time = 0.0, before_exch_time = 0.0;
+double exch_start_time, after_exch_start_time, sort_start_time, write_start_time, pre_write_start_time, before_loop_start_time, before_exch_start_time;
 /* prototypes of functions used for collective writes only. */
 static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd,
                                         const void *buf,
@@ -506,6 +506,8 @@ void ADIOI_LUSTRE_WriteStridedColl(ADIO_File fd, const void *buf, MPI_Aint count
     MPI_Comm_size(fd->comm, &nprocs);
     MPI_Comm_rank(fd->comm, &myrank);
 
+    if (myrank==0) printf("--------------------- ADIOI_LUSTRE_WriteStridedColl start ------------------------------\n");
+
     
 
     orig_fp = fd->fp_ind;
@@ -662,12 +664,12 @@ void ADIOI_LUSTRE_WriteStridedColl(ADIO_File fd, const void *buf, MPI_Aint count
          * count_my_req_aggr is the number of aggregators whose file domains
          * have this rank's write requests>
          */
-        if (myrank==1) printf("%s before ADIOI_LUSTRE_Calc_my_req: %lf \n", __func__, MPI_Wtime() - start_time);
+        if (myrank==0) printf("%s before ADIOI_LUSTRE_Calc_my_req: %lf \n", __func__, MPI_Wtime() - start_time);
         start_time = MPI_Wtime();
         ADIOI_LUSTRE_Calc_my_req(fd, offset_list, len_list, contig_access_count,
                                  &count_my_req_aggr, &count_my_req_per_aggr,
                                  &my_req, buftype_is_contig, &buf_idx);
-        if (myrank==1) printf("%s after ADIOI_LUSTRE_Calc_my_req: %lf \n", __func__, MPI_Wtime() - start_time);
+        if (myrank==0) printf("%s after ADIOI_LUSTRE_Calc_my_req: %lf \n", __func__, MPI_Wtime() - start_time);
         start_time = MPI_Wtime();
         /* Find the array index pointing to ranklist[] whose value is this
          * process's MPI rank ID, if this rank is an aggregator. Otherwise -1
@@ -694,14 +696,14 @@ void ADIOI_LUSTRE_WriteStridedColl(ADIO_File fd, const void *buf, MPI_Aint count
          * count_others_req_per_proc[i] indicates how many noncontiguous
          * requests from process i that fall into this process's file domain.
          */
-        if (myrank==1) printf("%s before ADIOI_LUSTRE_Calc_others_req: %lf \n", __func__, MPI_Wtime() - start_time);
+        if (myrank==0) printf("%s before ADIOI_LUSTRE_Calc_others_req: %lf \n", __func__, MPI_Wtime() - start_time);
         start_time = MPI_Wtime();
         ADIOI_LUSTRE_Calc_others_req(fd, count_my_req_aggr,
                                      count_my_req_per_aggr, my_req, nprocs,
                                      myrank, my_aggr_idx,
                                      &count_others_req_procs,
                                      &count_others_req_per_proc, &others_req);
-        if (myrank==1) printf("%s after ADIOI_LUSTRE_Calc_others_req: %lf \n", __func__, MPI_Wtime() - start_time);
+        if (myrank==0) printf("%s after ADIOI_LUSTRE_Calc_others_req: %lf \n", __func__, MPI_Wtime() - start_time);
         start_time = MPI_Wtime();
 
 #ifdef WKL_DEBUG
@@ -719,16 +721,18 @@ else
          * MPI communication in ADIOI_LUSTRE_Exch_and_write(), only MPI_Issend,
          * MPI_Irecv, and MPI_Waitall.
          */
-        if (myrank==1) printf("ADIOI_LUSTRE_Exch_and_write before ADIOI_LUSTRE_Exch_and_write: %lf \n", MPI_Wtime() - start_time);
+        if (myrank==0) printf("%s before ADIOI_LUSTRE_Exch_and_write: %lf \n", __func__, MPI_Wtime() - start_time);
+        //reinialize timers in ADIOI_LUSTRE_Exch_and_write
+        before_exch_time = exch_time = after_exch_time = pre_write_time = write_time = sort_time = 0;
         start_time = MPI_Wtime();
         ADIOI_LUSTRE_Exch_and_write(fd, buf, buftype, buftype_is_contig,
                                     flat_buf, others_req, my_req, offset_list,
                                     len_list, min_st_loc, max_end_loc,
                                     contig_access_count, my_aggr_idx, buf_idx,
                                     error_code);
-        if (myrank==1) {
+        if (myrank==0) {
             printf("%s after ADIOI_LUSTRE_Exch_and_write: %lf \n", __func__, MPI_Wtime() - start_time);
-            printf("ADIOI_LUSTRE_Exch_and_write within loops for two phase: before ADIOI_LUSTRE_W_Exchange_data: %lf \n", MPI_Wtime() - start_time - exch_time - after_exch_time);
+            printf("ADIOI_LUSTRE_Exch_and_write within loops for two phase: before ADIOI_LUSTRE_W_Exchange_data: %lf \n", before_exch_time);
             printf("ADIOI_LUSTRE_Exch_and_write within loops for two phase: ADIOI_LUSTRE_W_Exchange_data: %lf \n", exch_time);
             printf("ADIOI_LUSTRE_Exch_and_write within loops for two phase: after ADIOI_LUSTRE_W_Exchange_data: %lf \n", after_exch_time);
             printf("ADIOI_LUSTRE_Exch_and_write within loops for two phase: pre write time: %lf \n", pre_write_time);
@@ -798,7 +802,8 @@ else
 #endif
 
     fd->fp_sys_posn = -1;       /* set it to null. */
-    if (myrank==1) printf("%s function end: %lf \n", __func__, MPI_Wtime() - start_time);
+    if (myrank==0) printf("%s function end: %lf \n", __func__, MPI_Wtime() - start_time);
+    if (myrank==0) printf("--------------------- ADIOI_LUSTRE_WriteStridedColl end ------------------------------\n");
 }
 
 /* If successful, error_code is set to MPI_SUCCESS.  Otherwise an error code is
@@ -850,6 +855,8 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd,
 
     MPI_Comm_size(fd->comm, &nprocs);
     MPI_Comm_rank(fd->comm, &myrank);
+
+    before_loop_start_time = MPI_Wtime();
 
     /* The aggregate access region (across all processes) of this collective
      * write starts from min_st_loc and ends at max_end_loc. The collective
@@ -1024,14 +1031,14 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd,
     int n_buftypes = 0;
     int flat_buf_idx = 0;
     int flat_buf_sz = (buftype_is_contig) ? 0 : flat_buf->blocklens[0];
-    if (myrank==1) printf("%s before loops for two phase: %lf \n", __func__, MPI_Wtime() - start_time);
-    start_time = MPI_Wtime();
+    if (myrank==0) printf("%s before loops for two phase: %lf \n", __func__, MPI_Wtime() - before_loop_start_time);
+    if (myrank==0) printf("\n number of rounds: %d\n", ntimes);
 
-
+    
     for (m = 0; m < ntimes; m++) {
         int real_size;
         ADIO_Offset real_off;
-
+        before_exch_start_time = MPI_Wtime();
         /* Note that MPI standard requires that displacements in filetypes are
          * in a monotonically non-decreasing order and that, for writes, the
          * filetypes cannot specify overlapping regions in the file. This
@@ -1112,6 +1119,7 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd,
         char *wbuf = (write_buf == NULL) ? NULL : write_buf[ibuf];
         char *rbuf = (recv_buf  == NULL) ? NULL :  recv_buf[ibuf];
         send_buf[ibuf] = NULL;
+        before_exch_time += MPI_Wtime() - before_exch_start_time;
         exch_start_time = MPI_Wtime();
         ADIOI_LUSTRE_W_Exchange_data(fd,
                                      buf,
@@ -1573,6 +1581,8 @@ static void ADIOI_LUSTRE_W_Exchange_data(
 
     /* determine whether checking holes is necessary */
     check_hole = 1;
+    // if (myrank == 0) printf("%s srt_off_len->num: %d \n", __func__, srt_off_len->num);
+    // if (myrank == 0) printf("%s fd->hints->ds_wr_lb: %d \n", __func__, fd->hints->ds_wr_lb);
     if (srt_off_len->num == 0) {
         /* this process has nothing to receive and hence no hole */
         check_hole = 0;
@@ -1591,7 +1601,7 @@ static void ADIOI_LUSTRE_W_Exchange_data(
     /* else: fd->hints->ds_write == ADIOI_HINT_ENABLE or ADIOI_HINT_DISABLE,
      * proceed to check_hole, as we must construct srt_off_len->off and srt_off_len->len.
      */
-
+    // if (myrank == 0) printf("%s before hole check: %d \n", __func__, check_hole);
     if (check_hole) {
         /* merge the offset-length pairs of all others_req[] (already sorted
          * individually) into a single list of offset-length pairs (srt_off_len->off and
