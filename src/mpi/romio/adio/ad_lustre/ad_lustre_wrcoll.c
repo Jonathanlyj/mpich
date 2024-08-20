@@ -145,8 +145,8 @@ void transfer_datatype_to_cpu(MPI_Datatype buftype, const void *buf, void **host
         }
         // Unpack the data from the packed buffer into the destination buffer
         position = 0;
-        check_memory_type(*host_buf, "*host_buf");
-        check_memory_type(packed_buffer, "packed_buffer");
+        // check_memory_type(*host_buf, "*host_buf");
+        // check_memory_type(packed_buffer, "packed_buffer");
         // printf("\n host_buf address: %p\n", *host_buf);;
         // printf("\n packed_buffer address: %p\n", packed_buffer);
         // printf("\npacked_size: %f\n", (float)packed_size/(1024 * 1024));
@@ -724,11 +724,12 @@ void ADIOI_LUSTRE_WriteStridedColl(ADIO_File fd, const void *buf, MPI_Aint count
     if (count > 0 && is_device) {
         // printf("\ntransfer datatype to CPU\n");
         transfer_datatype_to_cpu(buftype, buf, &host_buf, count, buftype_is_contig);
+        buf = host_buf;
     }
     offload_time += MPI_Wtime() - offload_start;
     // printf("host_buf_in_romio address: %p\n", host_buf);
     // if (myrank == 0) printf("transfer device buffer to CPU\n");
-    buf = host_buf;
+    
     /* If collective I/O is not necessary, use independent I/O */
     if ((!do_collect && fd->hints->cb_write == ADIOI_HINT_AUTO) ||
         fd->hints->cb_write == ADIOI_HINT_DISABLE) {
