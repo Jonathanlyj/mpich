@@ -1816,8 +1816,8 @@ static void ADIOI_LUSTRE_W_Exchange_data(
                  * buftype_is_contig == 0 is handled at the send time below.
                  */
                 char *fromBuf = (char *) buf + buf_idx[my_aggr_idx];
-                // MEMCPY_UNPACK(i, fromBuf, start_pos, recv_count, write_buf);
-                MEMCPY_UNPACK_FROM_DEVICE(i, fromBuf, start_pos, recv_count, write_buf);
+                MEMCPY_UNPACK(i, fromBuf, start_pos, recv_count, write_buf);
+                // MEMCPY_UNPACK_FROM_DEVICE(i, fromBuf, start_pos, recv_count, write_buf);
             }
         }
     }
