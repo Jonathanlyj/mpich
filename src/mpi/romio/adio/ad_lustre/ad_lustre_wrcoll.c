@@ -45,6 +45,7 @@ if (fd->hints->fs_hints.lustre.lock_ahead_write) {                          \
     char *_ptr = (inbuf);                                        \
     MPI_Aint    *mem_ptrs = others_req[x].mem_ptrs + (start)[x]; \
     ADIO_Offset *mem_lens = others_req[x].lens     + (start)[x]; \
+    printf("\ncount[x]: %d\n", count[x]); \
     for (_k=0; _k<(count)[x]; _k++) {                            \
         cudaMemcpy((outbuf) + mem_ptrs[_k], _ptr, mem_lens[_k],  \
                    cudaMemcpyDeviceToHost);                      \
@@ -52,12 +53,38 @@ if (fd->hints->fs_hints.lustre.lock_ahead_write) {                          \
     }                                                            \
 }
 
+
+double offload_time = 0.0;
+double total_time = 0.0; 
+double exchange_time = 0.0;
+double write_time = 0.0;
+
 typedef struct {
     int          num; /* number of elements in the above off-len list */
     int         *len; /* list of write lengths by this rank in round m */
     ADIO_Offset *off; /* list of write offsets by this rank in round m */
 } off_len_list;
 
+
+int check_memory_type(const void *ptr, const char *name) {
+    struct cudaPointerAttributes attributes;
+    cudaError_t err = cudaPointerGetAttributes(&attributes, ptr);
+    if (err != cudaSuccess) {
+        printf("Failed to get pointer attributes for %s: %s\n", name, cudaGetErrorString(err));
+        return -1;
+    }
+    
+    // if (attributes.type == cudaMemoryTypeDevice) {
+    //     return 1;
+    // } else if (attributes.type == cudaMemoryTypeHost) {
+    //     printf("%s is in host memory\n", name);
+    // } else if (attributes.type == cudaMemoryTypeManaged) {
+    //     printf("%s is in managed memory\n", name);
+    // } else {
+    //     printf("%s is in unregistered memory\n", name);
+    // }
+    return attributes.type == cudaMemoryTypeDevice;
+}
 
 void transfer_buf_to_cpu(void **host_buf, const void *buf, size_t trans_size) {
     // Get the size of the MPI_Datatype in bytes
@@ -84,79 +111,6 @@ void transfer_buf_to_cpu(void **host_buf, const void *buf, size_t trans_size) {
 }
 
 
-int check_memory_type(const void *ptr, const char *name) {
-    struct cudaPointerAttributes attributes;
-    cudaError_t err = cudaPointerGetAttributes(&attributes, ptr);
-    if (err != cudaSuccess) {
-        printf("Failed to get pointer attributes for %s: %s\n", name, cudaGetErrorString(err));
-        return -1;
-    }
-    
-    if (attributes.type == cudaMemoryTypeDevice) {
-        return 1;
-    } else if (attributes.type == cudaMemoryTypeHost) {
-        printf("%s is in host memory\n", name);
-    } else if (attributes.type == cudaMemoryTypeManaged) {
-        printf("%s is in managed memory\n", name);
-    } else {
-        printf("%s is in unregistered memory\n", name);
-    }
-    return 0;
-}
-
-void transfer_datatype_to_cpu(MPI_Datatype buftype, const void *buf, void **host_buf, int count, int buftype_is_contig) {
-    // Get the size of the MPI_Datatype in bytes
-    int type_size, packed_size;
-    
-    MPI_Type_size(buftype, &type_size);
-    if (buftype_is_contig) {
-        transfer_buf_to_cpu(host_buf, buf, type_size * count);
-    } else {
-        int packed_size;
-        MPI_Pack_size(count, buftype, MPI_COMM_WORLD, &packed_size);
-        // Allocate memory for the packed buffer
-        void* packed_buffer = ADIOI_Malloc(2 * packed_size);
-        // void* packed_buffer;
-        // cudaMallocHost(&packed_buffer, packed_size);
-        if (packed_buffer == NULL) {
-            fprintf(stderr, "Failed to allocate packed buffer\n");
-            return;
-        }
-        // Pack the data from the source buffer into the packed buffer
-        int position = 0;
-        MPI_Pack(buf, count, buftype, packed_buffer, packed_size, &position, MPI_COMM_WORLD);
-        
-        // Determine the extent of the datatype to allocate the destination buffer
-        MPI_Aint lb, extent;
-        MPI_Type_get_extent(buftype, &lb, &extent);
-        // printf("extent: %ld\n", extent);
-        // printf("count: %d\n", count);
-        // Allocate memory for the destination buffer
-        *host_buf = ADIOI_Malloc(count * extent + 1);
-        // cudaMallocHost(host_buf, count * extent);
-        if (*host_buf == NULL) {
-            fprintf(stderr, "Failed to allocate host memory\n");
-            ADIOI_Free(packed_buffer);
-            return;
-        }
-        // Unpack the data from the packed buffer into the destination buffer
-        position = 0;
-        check_memory_type(*host_buf, "*host_buf");
-        check_memory_type(packed_buffer, "packed_buffer");
-        // printf("\n host_buf address: %p\n", *host_buf);;
-        // printf("\n packed_buffer address: %p\n", packed_buffer);
-        // printf("\npacked_size: %f\n", (float)packed_size/(1024 * 1024));
-        // printf("\nhost_buf size: %f\n", (float)count * extent/(1024 * 1024));
-        // printf("\nposition: %d\n", position);
-        MPI_Unpack(packed_buffer, packed_size, &position, *host_buf, count, buftype, MPI_COMM_WORLD);
-        // printf("\nUnpacked data to host buffer\n");
-        // Free the packed buffer as it's no longer needed
-        ADIOI_Free(packed_buffer);
-    }
-
-    
-}
-
 
 
 
@@ -176,7 +130,8 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd,
                                         int contig_access_count,
                                         int my_aggr_idx,
                                         ADIO_Offset **buf_idx,
-                                        int *error_code);
+                                        int *error_code,
+                                        int is_device);
 static void ADIOI_LUSTRE_Fill_send_buffer(ADIO_File fd, const void *buf,
                                           int *n_buftypes,
                                           int *flat_buf_idx,
@@ -221,7 +176,8 @@ static void ADIOI_LUSTRE_W_Exchange_data(ADIO_File fd, const void *buf,
                                          off_len_list *srt_off_len,
                                          MPI_Request *reqs,
                                          int *n_reqs,
-                                         int *error_code);
+                                         int *error_code,
+                                         int is_device_buf);
 void ADIOI_Heap_merge(ADIOI_Access * others_req, int *count,
                       ADIO_Offset * srt_off, int *srt_len, int *start_pos,
                       int nprocs, int nprocs_recv, int total_elements);
@@ -620,6 +576,12 @@ void ADIOI_LUSTRE_WriteStridedColl(ADIO_File fd, const void *buf, MPI_Aint count
     MPI_Comm_size(fd->comm, &nprocs);
     MPI_Comm_rank(fd->comm, &myrank);
 
+    double total_start = MPI_Wtime();
+    exchange_time = 0.0;
+    offload_time = 0.0;
+    write_time = 0.0;
+
+
     orig_fp = fd->fp_ind;
     // if (myrank==0) printf("\nADIOI_LUSTRE_WriteStridedColl called");
 
@@ -712,15 +674,6 @@ void ADIOI_LUSTRE_WriteStridedColl(ADIO_File fd, const void *buf, MPI_Aint count
     void *host_buf;
     int is_device;
     is_device = check_memory_type(buf, "buf_in_romio");
-    // printf("\nbuf_in_romio address: %p\n", buf);
-    if (count > 0 && is_device) {
-        // printf("\ntransfer datatype to CPU\n");
-        transfer_datatype_to_cpu(buftype, buf, &host_buf, count, buftype_is_contig);
-    }
-    
-    // printf("host_buf_in_romio address: %p\n", host_buf);
-    // if (myrank == 0) printf("transfer device buffer to CPU\n");
-    buf = host_buf;
     /* If collective I/O is not necessary, use independent I/O */
     if ((!do_collect && fd->hints->cb_write == ADIOI_HINT_AUTO) ||
         fd->hints->cb_write == ADIOI_HINT_DISABLE) {
@@ -854,7 +807,7 @@ else
                                     flat_buf, others_req, my_req, offset_list,
                                     len_list, min_st_loc, max_end_loc,
                                     contig_access_count, my_aggr_idx, buf_idx,
-                                    error_code);
+                                    error_code, is_device);
 
         /* free all memory allocated */
         ADIOI_Free_others_req(nprocs, count_others_req_per_proc, others_req);
@@ -915,6 +868,13 @@ else
 #endif
 
     fd->fp_sys_posn = -1;       /* set it to null. */
+    total_time = MPI_Wtime() - total_start;
+    if (myrank == 0) {
+        printf("ROMIO: ADIOI_LUSTRE_WriteStridedColl total time: %lf seconds\n", total_time);
+        printf("ROMIO: ADIOI_LUSTRE_WriteStridedColl offload time: %lf seconds\n", offload_time); 
+        printf("ROMIO: ADIOI_LUSTRE_WriteStridedColl exchange time: %lf seconds\n", exchange_time);
+        printf("ROMIO: ADIOI_LUSTRE_WriteStridedColl write time: %lf seconds\n", write_time);   
+    }
 }
 
 /* If successful, error_code is set to MPI_SUCCESS.  Otherwise an error code is
@@ -934,7 +894,8 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd,
                                         int contig_access_count,
                                         int my_aggr_idx,
                                         ADIO_Offset **buf_idx,
-                                        int *error_code)
+                                        int *error_code,
+                                        int is_device)
 {
     /* Each process sends all its write requests to I/O aggregators based on
      * the file domain assignment to the aggregators. In this implementation,
@@ -976,7 +937,10 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd,
      * requests to I/O aggregators.
      */
 
-
+    //GPU: printout of the amount of the write buffer in each iteration, not allocation size
+    //examples: 100 bytes
+    //ntimes 10
+    //each iteration how much of data is used
 
     cb_nodes = fd->hints->cb_nodes;
     striping_unit = fd->hints->striping_unit;
@@ -1231,6 +1195,7 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd,
         char *rbuf = (recv_buf  == NULL) ? NULL :  recv_buf[ibuf];
         send_buf[ibuf] = NULL;
         // printf("\nADIOI_LUSTRE_W_Exchange_data");
+        double exchange_start = MPI_Wtime();
         ADIOI_LUSTRE_W_Exchange_data(fd,
                                      buf,
                                      wbuf,               /* OUT: updated in each round */
@@ -1259,8 +1224,9 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd,
                                      &srt_off_len[ibuf],   /* OUT: list of write request off-len pairs */
                                      reqs + batch_nreqs,   /* OUT: nonblocking recv+send request IDs */
                                      &nreqs[ibuf],         /* OUT: number of recv+send request IDs */
-                                     error_code);
-
+                                     error_code,
+                                     is_device);
+        exchange_time += MPI_Wtime() - exchange_start;
         if (*error_code != MPI_SUCCESS)
             goto over;
 
@@ -1444,7 +1410,7 @@ assert(req_ptr - reqs <= n_send_recv_ub);
                      */
                     ADIOI_Assert(srt_off_len[j].off[i] < real_off + real_size &&
                                  srt_off_len[j].off[i] >= real_off);
-
+                    double write_start = MPI_Wtime();
                     ADIO_WriteContig(fd,
                                      write_buf[j] + (srt_off_len[j].off[i] - real_off),
                                      srt_off_len[j].len[i],
@@ -1452,6 +1418,7 @@ assert(req_ptr - reqs <= n_send_recv_ub);
                                      ADIO_EXPLICIT_OFFSET,
                                      srt_off_len[j].off[i],
                                      &status, error_code);
+                    write_time += MPI_Wtime() - write_start;
 
                     if (*error_code != MPI_SUCCESS)
                         goto over;
@@ -1646,7 +1613,8 @@ static void ADIOI_LUSTRE_W_Exchange_data(
             off_len_list        *srt_off_len,  /* OUT: list of writes by this rank in this round */
             MPI_Request         *reqs,         /* OUT: MPI nonblocking recv+send request IDs */
             int                 *nreqs,        /* OUT: number of nonblocking recv+send posted */
-            int                 *error_code)   /* OUT: */
+            int                 *error_code,
+            int                 is_device_buf)   /* IN: is device buffer or not*/
 {
     char *buf_ptr, *contig_buf;
     int i, nprocs, myrank, nprocs_recv, nprocs_send, err;
@@ -1766,7 +1734,11 @@ static void ADIOI_LUSTRE_W_Exchange_data(
 
     /* nrecv/nsend is the number of Issend/Irecv to be posted */
     int nrecv = 0, nsend = 0;
-
+    if (myrank == 0){
+        for(int i = 0; i < nprocs; i++){
+            printf("recv_count[%d] = %d\n", i, recv_count[i]);
+        }
+    }
     if (!fd->atomicity) {
         /* post receives and receive messages into contig_buf, a temporary
          * buffer */
@@ -1797,9 +1769,17 @@ static void ADIOI_LUSTRE_W_Exchange_data(
                 /* send/recv to/from self uses memcpy()
                  * buftype_is_contig == 0 is handled at the send time below.
                  */
+                
                 char *fromBuf = (char *) buf + buf_idx[my_aggr_idx];
-                // MEMCPY_UNPACK(i, fromBuf, start_pos, recv_count, write_buf);
-                MEMCPY_UNPACK_FROM_DEVICE(i, fromBuf, start_pos, recv_count, write_buf);
+                
+                if (is_device_buf) {
+                    double offload_start = MPI_Wtime();
+                    MEMCPY_UNPACK_FROM_DEVICE(i, fromBuf, start_pos, recv_count, write_buf);
+                    // offload_time += MPI_Wtime() - offload_start;
+                }
+                else MEMCPY_UNPACK(i, fromBuf, start_pos, recv_count, write_buf)
+                
+                
             }
         }
     }
@@ -1827,7 +1807,6 @@ static void ADIOI_LUSTRE_W_Exchange_data(
         /* If buftype_is_contig, data can be directly sent from user buf
          * at location given by buf_idx.
          */
-        
         for (i = 0; i < cb_nodes; i++) {
             int dest = fd->hints->ranklist[i];
             if (send_size[i] && i != my_aggr_idx) {
@@ -1836,18 +1815,19 @@ ADIOI_Assert(buf_idx[i] != -1);
 #endif
                 //Transfer data from device to host
                 //option1: manually copy data from device to host
-                // void *host_buf;
-                // transfer_buf_to_cpu(&host_buf, (char *) buf + buf_idx[i], send_size[i]);
-  
-                // //End of transfer
-                // MPI_Issend(host_buf, send_size[i],
-                //            MPI_BYTE, dest, ADIOI_COLL_TAG(dest, iter),
-                //            fd->comm, &reqs[nsend++]);
-
-                //option2: call as normal, cuda-aware mpich will handle the transfer
-                MPI_Issend((char *) buf + buf_idx[i], send_size[i],
-                           MPI_BYTE, dest, ADIOI_COLL_TAG(dest, iter),
-                           fd->comm, &reqs[nsend++]);
+                if (is_device_buf) {
+                    void *host_buf;
+                    double offload_start = MPI_Wtime();
+                    transfer_buf_to_cpu(&host_buf, (char *) buf + buf_idx[i], send_size[i]);
+                    offload_time += MPI_Wtime() - offload_start;
+                    MPI_Issend((char *)host_buf, send_size[i],
+                               MPI_BYTE, dest, ADIOI_COLL_TAG(dest, iter),
+                               fd->comm, &reqs[nsend++]);
+                } else {
+                    MPI_Issend((char *) buf + buf_idx[i], send_size[i],
+                               MPI_BYTE, dest, ADIOI_COLL_TAG(dest, iter),
+                               fd->comm, &reqs[nsend++]);
+                }
             }
         }
     } else if (nprocs_send) {
@@ -1862,7 +1842,7 @@ ADIOI_Assert(buf_idx[i] != -1);
         (*send_buf)[0] = (char *) ADIOI_Malloc(send_total_size);
         for (i = 1; i < cb_nodes; i++)
             (*send_buf)[i] = (*send_buf)[i - 1] + send_size[i - 1];
-        
+        //make sure the "buf" is replaced by new host buffer
         ADIOI_LUSTRE_Fill_send_buffer(fd, buf, n_buftypes, flat_buf_idx,
                                       flat_buf_sz, flat_buf, (*send_buf),
                                       fileview_indx, offset_list, len_list,
