@@ -108,6 +108,23 @@ int check_memory_type(const void *ptr, const char *name) {
     return attributes.type == cudaMemoryTypeDevice;
 }
 
+
+void pack_datatype_to_cpu(MPI_Datatype buftype, const void *buf, void **dest_buf, int count, MPI_Datatype *newtype, MPI_Aint *newcount) {
+    int packed_size;
+    MPI_Pack_size(count, buftype, MPI_COMM_WORLD, &packed_size);
+    *dest_buf = ADIOI_Malloc(packed_size);
+    if (*dest_buf == NULL) {
+        fprintf(stderr, "Failed to allocate packed buffer\n");
+        return;
+    }
+    int position = 0;
+    MPI_Pack(buf, count, buftype, *dest_buf, packed_size, &position, MPI_COMM_WORLD);
+    *newtype = MPI_PACKED;
+    *newcount = packed_size;
+    return;
+}
+
+
 void transfer_datatype_to_cpu(MPI_Datatype buftype, const void *buf, void **host_buf, int count, int buftype_is_contig) {
     // Get the size of the MPI_Datatype in bytes
     int type_size, packed_size;
@@ -722,8 +739,16 @@ void ADIOI_LUSTRE_WriteStridedColl(ADIO_File fd, const void *buf, MPI_Aint count
     is_device = check_memory_type(buf, "buf_in_romio");
     // printf("\nbuf_in_romio address: %p\n", buf);
     if (count > 0 && is_device) {
-        // printf("\ntransfer datatype to CPU\n");
-        transfer_datatype_to_cpu(buftype, buf, &host_buf, count, buftype_is_contig);
+        if (!buftype_is_contig) {
+            MPI_Datatype new_type;
+            MPI_Aint new_count;
+            pack_datatype_to_cpu(buftype, buf, &host_buf, count, &new_type, &new_count);
+            buftype = new_type;
+            count = new_count;
+            buftype_is_contig = 1;
+        } else {
+           transfer_datatype_to_cpu(buftype, buf, &host_buf, count, buftype_is_contig);
+        }
         buf = host_buf;
     }
     offload_time += MPI_Wtime() - offload_start;
