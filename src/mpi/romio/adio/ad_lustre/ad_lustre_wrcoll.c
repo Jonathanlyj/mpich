@@ -662,7 +662,7 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd, const void *buf,
      */
     /* check the hint for data sieving */
     data_sieving = fd->hints->fs_hints.lustre.ds_in_coll;
-    if (myrank==0) printf("ntimes = %d\n", ntimes);
+    if (myrank==0) printf("max_ntimes = %d\n", max_ntimes);
     for (m = 0; m < max_ntimes; m++) {
         /* go through all others_req and my_req to check which will be received
          * and sent in this iteration.
@@ -730,6 +730,7 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd, const void *buf,
         }
         /* use variable "hole" to pass data_sieving flag into W_Exchange_data */
         hole = data_sieving;
+        double exchange_start = MPI_Wtime();
         ADIOI_LUSTRE_W_Exchange_data(fd, buf, write_buf, flat_buf, offset_list,
                                      len_list, send_size, recv_size, off, real_size,
                                      recv_count, recv_start_pos,
@@ -739,7 +740,8 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd, const void *buf,
                                      curr_to_proc, done_to_proc, &hole, m,
                                      buftype_extent, this_buf_idx,
                                      &srt_off, &srt_len, &srt_num, error_code);
-
+        exchange_time += MPI_Wtime() - exchange_start;
+        double write_start;
         if (*error_code != MPI_SUCCESS)
             goto over;
 
@@ -753,15 +755,19 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd, const void *buf,
             /* check whether to do data sieving */
             if (data_sieving == ADIOI_HINT_ENABLE) {
                 ADIOI_LUSTRE_WR_LOCK_AHEAD(fd, striping_info[2], off, error_code);
+                write_start = MPI_Wtime();
                 ADIO_WriteContig(fd, write_buf, real_size, MPI_BYTE,
                                  ADIO_EXPLICIT_OFFSET, off, &status, error_code);
+                write_time += MPI_Wtime() - write_start;
             } else {
                 /* if there is no hole, write data in one time;
                  * otherwise, write data in several times */
                 if (!hole) {
                     ADIOI_LUSTRE_WR_LOCK_AHEAD(fd, striping_info[2], off, error_code);
+                    write_start = MPI_Wtime();
                     ADIO_WriteContig(fd, write_buf, real_size, MPI_BYTE,
                                      ADIO_EXPLICIT_OFFSET, off, &status, error_code);
+                    write_time += MPI_Wtime() - write_start;
                 } else {
                     block_offset = -1;
                     block_len = 0;
@@ -776,7 +782,7 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd, const void *buf,
                                 } else {
                                     ADIOI_LUSTRE_WR_LOCK_AHEAD(fd, striping_info[2], block_offset,
                                                                error_code);
-                                    double write_start = MPI_Wtime();
+                                    write_start = MPI_Wtime();
                                     ADIO_WriteContig(fd, write_buf + block_offset - off, block_len,
                                                      MPI_BYTE, ADIO_EXPLICIT_OFFSET, block_offset,
                                                      &status, error_code);
@@ -791,11 +797,13 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd, const void *buf,
                     }
                     if (block_offset != -1) {
                         ADIOI_LUSTRE_WR_LOCK_AHEAD(fd, striping_info[2], block_offset, error_code);
+                        write_start = MPI_Wtime();
                         ADIO_WriteContig(fd,
                                          write_buf + block_offset - off,
                                          block_len,
                                          MPI_BYTE, ADIO_EXPLICIT_OFFSET,
                                          block_offset, &status, error_code);
+                        write_time += MPI_Wtime() - write_start;
                         if (*error_code != MPI_SUCCESS)
                             goto over;
                     }
