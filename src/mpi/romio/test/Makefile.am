@@ -19,14 +19,14 @@ AM_CPPFLAGS += -I$(top_builddir)/adio/include -I$(top_srcdir)/adio/include @mpl_
 AM_CFLAGS = $(USER_CFLAGS)
 AM_FFLAGS = $(USER_FFLAGS)
 
-CTESTS = simple async coll_test misc file_info excl \
+CTESTS = coll_test_w_cu simple async coll_test misc file_info excl \
      atomicity noncontig i_noncontig noncontig_coll split_coll shared_fp \
      psimple error status noncontig_coll2 aggregation1 aggregation2 \
      async-multiple ordered_fp hindexed types_with_zeros darray_read syshints \
      fstype_prefix ghost_cell check_type_contig buf_noncontig pio_noncontig \
      large_dtype atomicity_coll ntimes_filetype ntimes_buftype
 
-SKIP_TESTS = perf coll_perf large_array large_file external32
+SKIP_TESTS = coll_perf_cu coll_perf_cu_romio perf coll_perf large_array large_file external32 
 
 FTESTS = fcoll_test fperf fmisc pfcoll_test 
 
