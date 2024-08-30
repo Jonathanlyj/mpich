@@ -34,8 +34,8 @@ void transfer_buf_to_cpu(void **host_buf, const void *buf, size_t trans_size) {
     // Get the size of the MPI_Datatype in bytes
     //Transfer data from host to device
     cudaError_t err;
-    // *host_buf = ADIOI_Malloc(trans_size);
-    cudaMallocHost(host_buf,trans_size);
+    *host_buf = ADIOI_Malloc(trans_size);
+    // cudaMallocHost(host_buf,trans_size);
     size_t buf_size;
     err = cudaMemGetInfo(&buf_size, NULL);
     // printf("trans_size: %zu\n", trans_size);
