@@ -196,7 +196,7 @@ int main(int argc, char **argv)
                     writebuf[i], i);
         }
     }
-    printf("rank %d: before MPI_Barrier\n", mynod);
+    // printf("rank %d: before MPI_Barrier\n", mynod);
     MPI_Barrier(MPI_COMM_WORLD);
     MPI_Allreduce(&errs, &toterrs, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     if (mynod == 0) {
@@ -214,7 +214,7 @@ int main(int argc, char **argv)
 
     CUDA_CHECK(cudaFree(d_writebuf));
     // CUDA_CHECK(cudaFree(d_readbuf));
-    printf("before MPI_Finalize\n");
+    // printf("before MPI_Finalize\n");
     MPI_Finalize();
     return 0;
 }
