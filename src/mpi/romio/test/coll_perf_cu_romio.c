@@ -91,7 +91,7 @@ int main(int argc, char **argv)
     array_of_gsizes[1] = 128 * 9;
     array_of_gsizes[2] = 128 * 11;
 
-    // array_of_gsizes[0] = 128 * 1; //default is 17 but LEIA can only takes up to 10
+    // array_of_gsizes[0] = 128 * 1; 
     // array_of_gsizes[1] = 128 * 1;
     // array_of_gsizes[2] = 128 * 3;
 

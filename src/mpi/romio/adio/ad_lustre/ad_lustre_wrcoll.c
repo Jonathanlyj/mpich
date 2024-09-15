@@ -34,8 +34,6 @@ void transfer_buf_to_cpu(void *host_buf, const void *buf, size_t trans_size) {
     // Get the size of the MPI_Datatype in bytes
     //Transfer data from host to device
     cudaError_t err;
-    size_t buf_size;
-    err = cudaMemGetInfo(&buf_size, NULL);
     // printf("trans_size: %zu\n", trans_size);
     if (host_buf == NULL) {
         fprintf(stderr, "Failed to allocate host memory\n");
@@ -754,10 +752,11 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd, const void *buf,
         if (is_device && buftype_is_contig) {
             double offload_start = MPI_Wtime();
             for (i = 0; i < nprocs; i++) {
-                if (send_size[i] > 0)
-                    transfer_buf_to_cpu((void *)(buf + this_buf_idx[i]), (const void *)(d_buf + this_buf_idx[i]), (size_t)send_size[i]);
-
-            }
+                if (send_size[i] > 0){
+                    // transfer_buf_to_cpu((void *)(buf + this_buf_idx[i]), (const void *)(d_buf + this_buf_idx[i]), (size_t)send_size[i]);
+                    int position = this_buf_idx[i];
+                    MPI_Pack((const void *)(d_buf + this_buf_idx[i]), (int)send_size[i], MPI_BYTE, (void *)buf, (int)send_size[i], &position, MPI_COMM_SELF);
+            }   }
             offload_time += MPI_Wtime() - offload_start;
         }
 
