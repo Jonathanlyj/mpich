@@ -124,14 +124,14 @@ int main(int argc, char **argv)
 /* to eliminate paging effects, do the operations once but don't time
    them */
 
-    // MPI_CHECK(MPI_File_open(MPI_COMM_WORLD, filename,
-    //                         MPI_MODE_CREATE | MPI_MODE_RDWR, MPI_INFO_NULL, &fh));
-    // MPI_CHECK(MPI_File_set_view(fh, 0, MPI_INT, newtype, "native", MPI_INFO_NULL));
-    // MPI_CHECK(MPI_File_write_all(fh, d_buf, item_count, MPI_INT, &status));
-    // // MPI_CHECK(MPI_File_seek(fh, 0, MPI_SEEK_SET));
-    // // MPI_CHECK(MPI_File_read_all(fh, buf, item_count, MPI_INT, &status));
-    // MPI_CHECK(MPI_File_close(&fh));
-    // MPI_Barrier(MPI_COMM_WORLD);
+    MPI_CHECK(MPI_File_open(MPI_COMM_WORLD, filename,
+                            MPI_MODE_CREATE | MPI_MODE_RDWR, MPI_INFO_NULL, &fh));
+    MPI_CHECK(MPI_File_set_view(fh, 0, MPI_INT, newtype, "native", MPI_INFO_NULL));
+    MPI_CHECK(MPI_File_write_all(fh, d_buf, item_count, MPI_INT, &status));
+    // MPI_CHECK(MPI_File_seek(fh, 0, MPI_SEEK_SET));
+    // MPI_CHECK(MPI_File_read_all(fh, buf, item_count, MPI_INT, &status));
+    MPI_CHECK(MPI_File_close(&fh));
+    MPI_Barrier(MPI_COMM_WORLD);
 /* now time write_all */
 
     MPI_CHECK(MPI_File_open(MPI_COMM_WORLD, filename,
