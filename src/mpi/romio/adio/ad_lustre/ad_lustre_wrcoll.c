@@ -34,12 +34,13 @@ void transfer_buf_to_cpu(void **host_buf, const void *buf, size_t trans_size) {
     // Get the size of the MPI_Datatype in bytes
     //Transfer data from host to device
     cudaError_t err;
+
     *host_buf = ADIOI_Malloc(trans_size);
 
     // printf("\nbuf_in_romio address: %p\n", buf);
     // printf("\nhost_buf_in_romio address: %p\n", *host_buf);
     err = cudaMemcpy(*host_buf, buf, trans_size, cudaMemcpyDeviceToHost);
-    printf("\ntransfer size:%f MB",(double)trans_size / 1048576.0);
+    
 
     if (err != cudaSuccess) {
         fprintf(stderr, "CUDA memcpy failed: %s\n", cudaGetErrorString(err));
@@ -92,7 +93,7 @@ void transfer_datatype_to_cpu(MPI_Datatype buftype, const void *buf, void **host
 
     MPI_Type_size(buftype, &type_size);
     if (buftype_is_contig) {
-        transfer_buf_to_cpu(host_buf, buf, type_size * count);
+        transfer_buf_to_cpu(host_buf, buf, (size_t)type_size * count);
     } else {
         int packed_size;
         MPI_Pack_size(count, buftype, MPI_COMM_WORLD, &packed_size);
