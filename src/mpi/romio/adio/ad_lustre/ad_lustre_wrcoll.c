@@ -39,8 +39,9 @@ void transfer_buf_to_cpu(void **host_buf, const void *buf, size_t trans_size) {
 
     // printf("\nbuf_in_romio address: %p\n", buf);
     // printf("\nhost_buf_in_romio address: %p\n", *host_buf);
+    double offload_start = MPI_Wtime();
     err = cudaMemcpy(*host_buf, buf, trans_size, cudaMemcpyDeviceToHost);
-    
+    offload_time += MPI_Wtime() - offload_start;
 
     if (err != cudaSuccess) {
         fprintf(stderr, "CUDA memcpy failed: %s\n", cudaGetErrorString(err));
@@ -322,7 +323,7 @@ void ADIOI_LUSTRE_WriteStridedColl(ADIO_File fd, const void *buf, MPI_Aint count
     }
     ADIOI_Datatype_iscontig(datatype, &buftype_is_contig);
     //--------------- One-time CPU Offloading ----------------
-    double offload_start = MPI_Wtime();
+    // double offload_start = MPI_Wtime();
     void *host_buf;
     int is_device;
     is_device = check_memory_type(buf, "buf_in_romio");
@@ -340,7 +341,7 @@ void ADIOI_LUSTRE_WriteStridedColl(ADIO_File fd, const void *buf, MPI_Aint count
         }
         buf = host_buf;
     }
-    offload_time += MPI_Wtime() - offload_start;
+    // offload_time += MPI_Wtime() - offload_start;
     /* Decide if collective I/O should be done */
     if ((!do_collect && fd->hints->cb_write == ADIOI_HINT_AUTO) ||
         fd->hints->cb_write == ADIOI_HINT_DISABLE) {
@@ -488,12 +489,25 @@ void ADIOI_LUSTRE_WriteStridedColl(ADIO_File fd, const void *buf, MPI_Aint count
 
     fd->fp_sys_posn = -1;       /* set it to null. */
     total_time = MPI_Wtime() - total_start;
-    if (myrank == 0) {
-        printf("ROMIO: ADIOI_LUSTRE_WriteStridedColl total time: %lf seconds\n", total_time);
-        printf("ROMIO: ADIOI_LUSTRE_WriteStridedColl offload time: %lf seconds\n", offload_time); 
-        printf("ROMIO: ADIOI_LUSTRE_WriteStridedColl exchange time: %lf seconds\n", exchange_time);
-        printf("ROMIO: ADIOI_LUSTRE_WriteStridedColl write time: %lf seconds\n", write_time);   
+
+    double times[4] = {total_time, offload_time,  exchange_time, write_time};
+    char *names[4] = {"total_time", "offload_time", "exchange_time", "write_time"};
+    double max_times[4], min_times[4];
+
+    MPI_Reduce(&times[0], &max_times[0], 4, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&times[0], &min_times[0], 4, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
+    for (int i = 0; i < 4; i++) {
+        if (myrank == 0) {
+            printf("ROMIO: ADIOI_LUSTRE_WriteStridedColl Max %s time: %f seconds\n", names[i], max_times[i]);
+            printf("ROMIO: ADIOI_LUSTRE_WriteStridedColl Min %s time: %f seconds\n", names[i], min_times[i]);
+        }
     }
+    // if (myrank == 0) {
+    //     printf("ROMIO: ADIOI_LUSTRE_WriteStridedColl total time: %lf seconds\n", total_time);
+    //     printf("ROMIO: ADIOI_LUSTRE_WriteStridedColl offload time: %lf seconds\n", offload_time); 
+    //     printf("ROMIO: ADIOI_LUSTRE_WriteStridedColl exchange time: %lf seconds\n", exchange_time);
+    //     printf("ROMIO: ADIOI_LUSTRE_WriteStridedColl write time: %lf seconds\n", write_time);   
+    // }
 }
 
 /* If successful, error_code is set to MPI_SUCCESS.  Otherwise an error
