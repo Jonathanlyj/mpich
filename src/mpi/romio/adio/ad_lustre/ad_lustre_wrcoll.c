@@ -678,7 +678,7 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd, const void *buf,
         d_buf = buf;
         buf = host_buf;
     }
-
+    double send_size_total = 0;
     for (m = 0; m < max_ntimes; m++) {
         /* go through all others_req and my_req to check which will be received
          * and sent in this iteration.
@@ -751,12 +751,17 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd, const void *buf,
         //--------------- Chunked CPU Offloading ----------------
         if (is_device && buftype_is_contig) {
             double offload_start = MPI_Wtime();
+            
             for (i = 0; i < nprocs; i++) {
                 if (send_size[i] > 0){
                     // transfer_buf_to_cpu((void *)(buf + this_buf_idx[i]), (const void *)(d_buf + this_buf_idx[i]), (size_t)send_size[i]);
-                    int position = this_buf_idx[i];
-                    MPI_Pack((const void *)(d_buf + this_buf_idx[i]), (int)send_size[i], MPI_BYTE, (void *)buf, (int)send_size[i], &position, MPI_COMM_SELF);
-            }   }
+                    // printf("\nthis_buf_idx[i] = %lld, send_size[i] = %d\n", this_buf_idx[i], send_size[i]);
+                    int position = 0;
+                    MPI_Pack((const void *)(d_buf + this_buf_idx[i]), (int)send_size[i], MPI_BYTE, (void *)(buf + this_buf_idx[i]), (int)send_size[i], &position, MPI_COMM_SELF);
+                    send_size_total += (double)send_size[i] / 1048576.0;
+                }   
+            }
+            
             offload_time += MPI_Wtime() - offload_start;
         }
 
@@ -848,6 +853,7 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd, const void *buf,
         }
         iter_st_off += max_size;
     }
+  printf("rank: %d, m: %, send_size_total = %f MB\n", myrank, m, send_size_total);
   over:
     if (srt_off)
         ADIOI_Free(srt_off);
