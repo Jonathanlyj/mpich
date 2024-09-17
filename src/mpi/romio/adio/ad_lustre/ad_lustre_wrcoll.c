@@ -324,7 +324,7 @@ void ADIOI_LUSTRE_WriteStridedColl(ADIO_File fd, const void *buf, MPI_Aint count
     }
     ADIOI_Datatype_iscontig(datatype, &buftype_is_contig);
     //--------------- One-time CPU Offloading ----------------
-    double offload_start = MPI_Wtime();
+    // double offload_start = MPI_Wtime();
     void *host_buf;
 
     int is_device;
@@ -349,7 +349,7 @@ void ADIOI_LUSTRE_WriteStridedColl(ADIO_File fd, const void *buf, MPI_Aint count
         
     }
 
-    offload_time += MPI_Wtime() - offload_start;
+    // offload_time += MPI_Wtime() - offload_start;
     // //--------------- End One-time CPU Offloading ----------------
     /* Decide if collective I/O should be done */
     if ((!do_collect && fd->hints->cb_write == ADIOI_HINT_AUTO) ||
