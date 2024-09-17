@@ -35,17 +35,11 @@ void transfer_buf_to_cpu(void **host_buf, const void *buf, size_t trans_size) {
     //Transfer data from host to device
     cudaError_t err;
     *host_buf = ADIOI_Malloc(trans_size);
-    // cudaMallocHost(host_buf,trans_size);
-    size_t buf_size;
-    err = cudaMemGetInfo(&buf_size, NULL);
-    // printf("trans_size: %zu\n", trans_size);
-    if (*host_buf == NULL) {
-        fprintf(stderr, "Failed to allocate host memory\n");
-        return;
-    }
+
     // printf("\nbuf_in_romio address: %p\n", buf);
     // printf("\nhost_buf_in_romio address: %p\n", *host_buf);
     err = cudaMemcpy(*host_buf, buf, trans_size, cudaMemcpyDeviceToHost);
+    printf("\ntransfer size:%f MB",(double)trans_size / 1048576.0);
 
     if (err != cudaSuccess) {
         fprintf(stderr, "CUDA memcpy failed: %s\n", cudaGetErrorString(err));
