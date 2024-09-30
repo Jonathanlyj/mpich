@@ -953,7 +953,7 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd, const void *buf,
 
 
     }
-//   printf("rank: %d, m: %d, send_size_total = %f MB\n", myrank, m, send_size_total);
+  printf("rank: %d, m: %d, send_size_total = %f MB\n", myrank, m, send_size_total);
   over:
     if (srt_off)
         ADIOI_Free(srt_off);
