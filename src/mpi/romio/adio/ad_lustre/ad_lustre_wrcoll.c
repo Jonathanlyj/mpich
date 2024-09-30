@@ -10,7 +10,7 @@
 #ifdef HAVE_LUSTRE_LOCKAHEAD
 /* in ad_lustre_lock.c */
 void ADIOI_LUSTRE_lock_ahead_ioctl(ADIO_File fd,
-                                   int avail_cb_nodes, ADIO_Offset next_offset, int *error_code);
+                                   int avail_cb_nodes, ADIO_Offset off_nextset, int *error_code);
 
 /* Handle lock ahead.  If this write is outside our locked region, lock it now */
 #define ADIOI_LUSTRE_WR_LOCK_AHEAD(fd,cb_nodes,offset,error_code)           \
@@ -30,6 +30,7 @@ double offload_time = 0.0;
 double total_time = 0.0; 
 double exchange_time = 0.0;
 double write_time = 0.0;
+double send_size_total = 0;
 void transfer_buf_to_cpu(void *host_buf, const void *buf, size_t trans_size) {
     // Get the size of the MPI_Datatype in bytes
     //Transfer data from host to device
@@ -178,7 +179,7 @@ static void ADIOI_LUSTRE_W_Exchange_data(ADIO_File fd, const void *buf, char *wr
                                          MPI_Count * done_to_proc, int *hole, int iter,
                                          MPI_Aint buftype_extent, ADIO_Offset * buf_idx,
                                          ADIO_Offset ** srt_off, MPI_Count ** srt_len,
-                                         MPI_Count * srt_num, int *error_code);
+                                         MPI_Count * srt_num, int *error_code, int is_device, const void *d_buf, ADIO_Offset * this_buf_idx_next, MPI_Count * send_size_next);
 static void ADIOI_LUSTRE_IterateOneSided(ADIO_File fd, const void *buf, int *striping_info,
                                          ADIO_Offset * offset_list, ADIO_Offset * len_list,
                                          MPI_Count contig_access_count,
@@ -328,6 +329,7 @@ void ADIOI_LUSTRE_WriteStridedColl(ADIO_File fd, const void *buf, MPI_Aint count
     void *host_buf;
 
     int is_device;
+    // int user_buf_size;
     is_device = check_memory_type(buf, "buf_in_romio");
     // printf("\nbuf_in_romio address: %p\n", buf);
     if (count > 0 && is_device) {
@@ -345,6 +347,9 @@ void ADIOI_LUSTRE_WriteStridedColl(ADIO_File fd, const void *buf, MPI_Aint count
             int type_size;
             MPI_Type_size(datatype, &type_size);
             host_buf = ADIOI_Malloc(type_size * count);
+            //double buffer for pipelined approach
+            // user_buf_size = type_size * count;
+            // host_buf = ADIOI_Malloc(2 * user_buf_size);
         }
         
     }
@@ -546,6 +551,10 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd, const void *buf,
     MPI_Count max_ntimes, req_len, send_len;
     ADIO_Offset st_loc = -1, end_loc = -1, min_st_loc, max_end_loc;
     ADIO_Offset off, req_off, send_off, iter_st_off, *off_list;
+    //variables for GPU-CPU offloading
+    ADIO_Offset off_next, max_size_next, iter_st_off_next, *this_buf_idx_next;
+    MPI_Count *send_size_next, *send_curr_offlen_ptr_next;
+
     ADIO_Offset max_size, step_size = 0;
     int real_size;
     MPI_Count *recv_count, *send_curr_offlen_ptr, *recv_curr_offlen_ptr;
@@ -603,6 +612,7 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd, const void *buf,
      * so, step_size=avail_cb_nodes*stripe_size IO will be performed at most,
      * and ntimes=whole_file_portion/step_size
      */
+
     step_size = (ADIO_Offset) avail_cb_nodes *stripe_size;
     max_ntimes = (max_end_loc - min_st_loc + 1) / step_size
         + (((max_end_loc - min_st_loc + 1) % step_size) ? 1 : 0);
@@ -611,9 +621,12 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd, const void *buf,
         write_buf = (char *) ADIOI_Malloc(stripe_size);
 
     /* calculate the start offset for each iteration */
-    off_list = (ADIO_Offset *) ADIOI_Malloc((max_ntimes + 2 * nprocs) * sizeof(ADIO_Offset));
+    // off_list = (ADIO_Offset *) ADIOI_Malloc((max_ntimes + 2 * nprocs) * sizeof(ADIO_Offset));
+    off_list = (ADIO_Offset *) ADIOI_Malloc((max_ntimes + 3 * nprocs) * sizeof(ADIO_Offset));
     send_buf_idx = off_list + max_ntimes;
     this_buf_idx = send_buf_idx + nprocs;
+    //GPU: used for GPU-CPU offloading
+    this_buf_idx_next = this_buf_idx + nprocs;
 
     for (m = 0; m < max_ntimes; m++)
         off_list[m] = max_end_loc;
@@ -625,7 +638,8 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd, const void *buf,
         }
     }
 
-    recv_curr_offlen_ptr = ADIOI_Calloc(nprocs * 9, sizeof(MPI_Count));
+    // recv_curr_offlen_ptr = ADIOI_Calloc(nprocs * 9, sizeof(MPI_Count));
+    recv_curr_offlen_ptr = ADIOI_Calloc(nprocs * 11, sizeof(MPI_Count));
     send_curr_offlen_ptr = recv_curr_offlen_ptr + nprocs;
     /* their use is explained below. calloc initializes to 0. */
 
@@ -652,6 +666,10 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd, const void *buf,
     /* used to store the starting value of recv_curr_offlen_ptr[i] in
      * this iteration */
 
+    //GPU: used for GPU-CPU offloading
+    send_curr_offlen_ptr_next = recv_start_pos + nprocs;
+    send_size_next = send_curr_offlen_ptr_next + nprocs;
+
     ADIOI_Datatype_iscontig(datatype, &buftype_is_contig);
     if (!buftype_is_contig) {
         flat_buf = ADIOI_Flatten_and_find(datatype);
@@ -669,6 +687,8 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd, const void *buf,
      */
 
     iter_st_off = min_st_loc;
+    //GPU: used for GPU-CPU offloading
+    iter_st_off_next = min_st_loc;
 
     /* Although we have recognized the data according to OST index,
      * a read-modify-write will be done if there is a hole between the data.
@@ -682,16 +702,65 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd, const void *buf,
     /* check the hint for data sieving */
     data_sieving = fd->hints->fs_hints.lustre.ds_in_coll;
     if (myrank==0) printf("max_ntimes = %d\n", max_ntimes);
-
+    send_size_total = 0;
     //---------------Preparing Chunked CPU Offloading ----------------
     
-    int type_size;
+
     const void* d_buf;
     if (is_device && buftype_is_contig){
         d_buf = buf;
-        buf = host_buf;
+        buf = host_buf; //use first half of the double buffer for even m rounds
+
+
+        //for m = 0. offload for the first round m = 0
+        for (i = 0; i < nprocs; i++)
+           send_size_next[i] = 0;
+
+        // off = off_list[0];
+        max_size_next = MPL_MIN(step_size, max_end_loc - iter_st_off_next + 1);
+        // real_size = (int) MPL_MIN((off / stripe_size + 1) * stripe_size - off, end_loc - off + 1);
+        //only calculate sender-related things for the first round m = 0(for data offloading purpose only)
+        for (i = 0; i < nprocs; i++) {
+            MPI_Count j;
+            if (my_req[i].count) {
+                this_buf_idx_next[i] = buf_idx[i][send_curr_offlen_ptr_next[i]];
+                for (j = send_curr_offlen_ptr_next[i]; j < my_req[i].count; j++) {
+                    send_off = my_req[i].offsets[j];
+                    send_len = my_req[i].lens[j];
+                    if (send_off < iter_st_off_next + max_size_next) {
+                        send_size_next[i] += send_len;
+                    } else {
+                        break;
+                    }
+                }
+                send_curr_offlen_ptr_next[i] = j;
+            }
+            // if (myrank<1 && send_size[i]>0)
+            //     printf("rank: %d, m:%d, this_buf_idx[%d] = %lld, send_size[%d] = %d\n", myrank, m, i, this_buf_idx[i], i, send_size[i]);
+
+        }
+        iter_st_off_next += max_size_next;
+        //--------------- Chunked CPU Offloading ----------------
+        //data offloading for m=0 round, which cannot be overlapped
+        double offload_start = MPI_Wtime();
+        for (i = 0; i < nprocs; i++) {
+            if (send_size_next[i] > 0){
+                // transfer_buf_to_cpu((void *)(buf + this_buf_idx[i]), (const void *)(d_buf + this_buf_idx[i]), (size_t)send_size_next[i]);
+                // printf("\n Before Two-phase I/O round: this_buf_idx_next[i] = %lld, send_size_next[i] = %d\n", this_buf_idx_next[i], send_size_next[i]);
+                int position = 0;
+                MPI_Pack((const void *)(d_buf + this_buf_idx_next[i]), (int)send_size_next[i], MPI_BYTE, (void *)(buf + this_buf_idx_next[i]), (int)send_size_next[i], &position, MPI_COMM_SELF);
+                send_size_total += (double)send_size_next[i] / 1048576.0;
+            }   
+        }
+        
+        offload_time += MPI_Wtime() - offload_start;
+            // if (myrank<1 && send_size[i]>0)
+            //     printf("rank: %d, m:%d, this_buf_idx[%d] = %lld, send_size[%d] = %d\n", myrank, m, i, this_buf_idx[i], i, send_size[i]);
+        //--------------- End Chunked CPU Offloading ----------------
     }
-    double send_size_total = 0;
+    
+
+    
     for (m = 0; m < max_ntimes; m++) {
         /* go through all others_req and my_req to check which will be received
          * and sent in this iteration.
@@ -716,7 +785,7 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd, const void *buf,
          */
 
         /* first calculate what should be communicated */
-        
+
         for (i = 0; i < nprocs; i++)
             recv_count[i] = recv_size[i] = send_size[i] = 0;
 
@@ -761,28 +830,42 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd, const void *buf,
             // if (myrank<1 && send_size[i]>0)
             //     printf("rank: %d, m:%d, this_buf_idx[%d] = %lld, send_size[%d] = %d\n", myrank, m, i, this_buf_idx[i], i, send_size[i]);
         }
-        //--------------- Chunked CPU Offloading ----------------
-        if (is_device && buftype_is_contig) {
-            double offload_start = MPI_Wtime();
-            
+    
+        
+        //GPU:Start calculate send_size and this_buf_idx for next round (for data offloading purpose)
+        if (m < max_ntimes - 1){
+            for (i = 0; i < nprocs; i++)
+                send_size_next[i] = 0;
+            max_size_next = MPL_MIN(step_size, max_end_loc - iter_st_off_next + 1);
             for (i = 0; i < nprocs; i++) {
-                if (send_size[i] > 0){
-                    // transfer_buf_to_cpu((void *)(buf + this_buf_idx[i]), (const void *)(d_buf + this_buf_idx[i]), (size_t)send_size[i]);
-                    // printf("\nthis_buf_idx[i] = %lld, send_size[i] = %d\n", this_buf_idx[i], send_size[i]);
-                    int position = 0;
-                    MPI_Pack((const void *)(d_buf + this_buf_idx[i]), (int)send_size[i], MPI_BYTE, (void *)(buf + this_buf_idx[i]), (int)send_size[i], &position, MPI_COMM_SELF);
-                    send_size_total += (double)send_size[i] / 1048576.0;
-                }   
+                MPI_Count j;
+                if (my_req[i].count) {
+                    // printf("\nStart of round this_buf_idx_next[%d] = %lld, send_curr_offlen_ptr_next[%d] = %d\n", i, this_buf_idx_next[i], i, send_curr_offlen_ptr_next[i]);
+                    this_buf_idx_next[i] = buf_idx[i][send_curr_offlen_ptr_next[i]];
+                    for (j = send_curr_offlen_ptr_next[i]; j < my_req[i].count; j++) {
+                        send_off = my_req[i].offsets[j];
+                        send_len = my_req[i].lens[j];
+                        if (send_off < iter_st_off_next + max_size_next) {
+                            send_size_next[i] += send_len;
+                        } else {
+                            break;
+                        }
+                    }
+                    send_curr_offlen_ptr_next[i] = j;
+                    // printf("\nStart of round this_buf_idx_next[%d] = %lld, send_curr_offlen_ptr_next[%d] = %d\n", i, this_buf_idx_next[i], i, send_curr_offlen_ptr_next[i]);
+
+                }
             }
-            
-            offload_time += MPI_Wtime() - offload_start;
+            iter_st_off_next += max_size_next;
         }
-
-        //--------------- End Chunked CPU Offloading ----------------
-
+        
         /* use variable "hole" to pass data_sieving flag into W_Exchange_data */
         hole = data_sieving;
         double exchange_start = MPI_Wtime();
+
+        if (is_device && m == max_ntimes - 1) 
+            is_device = 0;//the last round, no need to offload data for next round to GPU
+        
         ADIOI_LUSTRE_W_Exchange_data(fd, buf, write_buf, flat_buf, offset_list,
                                      len_list, send_size, recv_size, off, real_size,
                                      recv_count, recv_start_pos,
@@ -791,7 +874,7 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd, const void *buf,
                                      striping_info, others_req, send_buf_idx,
                                      curr_to_proc, done_to_proc, &hole, m,
                                      buftype_extent, this_buf_idx,
-                                     &srt_off, &srt_len, &srt_num, error_code);
+                                     &srt_off, &srt_len, &srt_num, error_code, is_device, d_buf, this_buf_idx_next, send_size_next);
         exchange_time += MPI_Wtime() - exchange_start;
         double write_start;
         if (*error_code != MPI_SUCCESS)
@@ -865,8 +948,12 @@ static void ADIOI_LUSTRE_Exch_and_write(ADIO_File fd, const void *buf,
                 goto over;
         }
         iter_st_off += max_size;
+
+
+
+
     }
-  printf("rank: %d, m: %, send_size_total = %f MB\n", myrank, m, send_size_total);
+//   printf("rank: %d, m: %d, send_size_total = %f MB\n", myrank, m, send_size_total);
   over:
     if (srt_off)
         ADIOI_Free(srt_off);
@@ -900,7 +987,7 @@ static void ADIOI_LUSTRE_W_Exchange_data(ADIO_File fd, const void *buf,
                                          MPI_Aint buftype_extent,
                                          ADIO_Offset * buf_idx,
                                          ADIO_Offset ** srt_off, MPI_Count ** srt_len,
-                                         MPI_Count * srt_num, int *error_code)
+                                         MPI_Count * srt_num, int *error_code, int is_device, const void *d_buf, ADIO_Offset * this_buf_idx_next, MPI_Count * send_size_next)
 {
     int i, j, nprocs_recv, nprocs_send, err;
     char **send_buf = NULL;
@@ -912,6 +999,9 @@ static void ADIOI_LUSTRE_W_Exchange_data(ADIO_File fd, const void *buf,
     static size_t malloc_srt_num = 0;
     size_t send_total_size;
     static char myname[] = "ADIOI_W_EXCHANGE_DATA";
+
+
+    
 
     /* create derived datatypes for recv */
     *srt_num = 0;
@@ -1090,6 +1180,27 @@ static void ADIOI_LUSTRE_W_Exchange_data(ADIO_File fd, const void *buf,
             MPI_Testall(nprocs_send + nprocs_recv, requests, &i, statuses);
     }
 #else
+    // printf("\nis_device = %d, buftype_is_contig = %d\n", is_device, buftype_is_contig);
+    if (is_device && buftype_is_contig){
+        //--------------- Chunked CPU Offloading ----------------
+        //data offloading for m=0 round, which cannot be overlapped
+        // double offload_start = MPI_Wtime();
+        for (i = 0; i < nprocs; i++) {
+            if (send_size_next[i] > 0){
+                // transfer_buf_to_cpu((void *)(buf + this_buf_idx_next[i]), (const void *)(d_buf + this_buf_idx_next[i]), (size_t)send_size_next[i]);
+
+                // printf("\n Inside exchange_data rank: %d, this_buf_idx_next[%d] = %lld, send_size_next[%d] = %d\n", myrank, i, this_buf_idx_next[i], i, send_size_next[i]);
+                int position = 0;
+                MPI_Pack((const void *)(d_buf + this_buf_idx_next[i]), (int)send_size_next[i], MPI_BYTE, (void *)(buf + this_buf_idx_next[i]), (int)send_size_next[i], &position, MPI_COMM_SELF);
+                send_size_total += (double)send_size_next[i] / 1048576.0;
+            }   
+        }
+        
+        // offload_time += MPI_Wtime() - offload_start;
+
+        //--------------- End Chunked CPU Offloading ----------------
+        }
+
     /* bug fix from Wei-keng Liao and Kenin Coloma */
     if (fd->atomicity)
         MPI_Waitall(nprocs_send, send_req, statuses);
